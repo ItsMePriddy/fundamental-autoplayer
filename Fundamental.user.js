@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.0.2
+// @version      1.1.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -63,10 +63,18 @@
         setConfirmNone: true,   // set confirmation prompts to "None"
         doStageReset: true,     // attempt #reset1Button (stage reset) when ready
         doEndReset: true,       // attempt #reset2Button (end reset) when ready
-        vaporizeBoost: 2,       // stage 2: only vaporize when the production boost would
-                                // be at least this multiple (matches the game's own
-                                // default auto threshold). Raise it for fewer, bigger
-                                // resets and more time to buy structures between them.
+        vaporizeMode: 'adaptive', // stage 2 timing: 'adaptive' (recommended, speed-optimal)
+                                // maximizes the realized growth rate ln(boost)/elapsed and
+                                // self-tunes to the rebuild ramp + softcap; 'fixed' uses the
+                                // vaporizeBoost threshold below.
+        vaporizeBoost: 2,       // 'fixed' mode only: vaporize when the production boost reaches
+                                // this multiple. 2 = the game's hands-off default (NOT speed-
+                                // optimal — a full engine wipe per reset favors fewer/bigger
+                                // resets, ~10-40x for Submerged). Adaptive avoids guessing it.
+        vaporizeMinBoost: 1.5,  // adaptive: never fire a reset below this boost (skip worthless
+                                // resets while the engine is still rebuilding).
+        vaporizePeakDrop: 0.10, // adaptive: declare the peak passed (and vaporize) once
+                                // ln(boost)/elapsed falls this fraction below its running max.
         highStageResets: false, // stages 4-6 (collapse/merge/nucleation) are major prestige
                                 // resets with their own optimal-timing logic. Leave false to
                                 // let the GAME's auto-resets handle them; set true only if you
@@ -176,28 +184,59 @@
         clickIf('createAllStrangeness');// all strangeness (active stage)
     }
 
+    // ---- Vaporization timing (stage 2) ---------------------------------------
+    // Vaporizing wipes the whole stage-2 engine, so each reset has a real rebuild
+    // cost. Fastest stage completion = maximize the growth rate of the production
+    // multiplier, i.e. maximize ln(boost)/T_cycle (a renewal-reward problem). The
+    // optimum is the stopping rule: fire when ln(boost)/elapsed peaks. This self-
+    // tunes to the actual ramp and the 1e4 cloud softcap with no magic constant.
+    let vapLastTs = 0;       // timestamp of last vaporization (ms)
+    let vapPeakScore = 0;    // running max of ln(boost)/elapsed this cycle
+
+    const resetVaporTracking = () => { vapLastTs = Date.now(); vapPeakScore = 0; };
+
+    const doVaporize = () => { clickIf('reset0Button'); resetVaporTracking(); };
+
+    function vaporizeStep() {
+        const boost = readNum('#vaporizationBoostTotal > span');
+        if (boost === null) return;
+
+        if (CONFIG.vaporizeMode === 'fixed') {
+            if (boost >= CONFIG.vaporizeBoost) { doVaporize(); log('vaporize (fixed), boost', boost); }
+            return;
+        }
+
+        // Adaptive: maximize ln(boost)/elapsed.
+        if (!vapLastTs) vapLastTs = Date.now();
+        const elapsed = (Date.now() - vapLastTs) / 1000;
+        if (boost < CONFIG.vaporizeMinBoost || elapsed < 0.5) return; // too early / worthless
+
+        const score = Math.log(boost) / elapsed;
+        if (score > vapPeakScore) {
+            vapPeakScore = score; // still climbing — keep accumulating
+        } else if (score <= vapPeakScore * (1 - CONFIG.vaporizePeakDrop)) {
+            doVaporize(); // peak passed — cashing out now maximizes growth rate
+            log('vaporize (adaptive), boost', boost, 'after', elapsed.toFixed(1), 's');
+        }
+    }
+
     // ---- Reset pass -----------------------------------------------------------
     // reset0 = discharge(1) / vaporization(2) / rank(3) / collapse(4) / merge(5) / nucleation(6).
     // Each stage's reset has a very different cost/benefit, so they are handled
     // individually rather than spammed uniformly.
+    let prevStage = 0;
     function fastResets() {
         const s = activeStage();
+        if (s !== 2 && prevStage === 2) resetVaporTracking(); // left stage 2 — start fresh on return
+        prevStage = s;
+
         if (s === 1) {
             // Discharge: cheap and the regain is always beneficial — the standard
             // early strategy is to discharge constantly. (Don't gate on the label:
             // it can read "Next goal is X Energy" even when a discharge is available.)
             clickIf('reset0Button');
         } else if (s === 2) {
-            // Vaporization: a prestige-style reset. Firing it the instant any clouds
-            // are available loops forever and starves structure/upgrade buying. Only
-            // vaporize when the resulting production boost is worth it. The game shows
-            // that exact multiplier in #vaporizationBoostTotal and its own auto uses a
-            // default threshold of 2x.
-            const boost = readNum('#vaporizationBoostTotal > span');
-            if (boost !== null && boost >= CONFIG.vaporizeBoost) {
-                clickIf('reset0Button');
-                log('vaporize, boost', boost);
-            }
+            vaporizeStep();
         } else if (s === 3) {
             // Rank: hard-gated internally by a mass requirement and capped at maxRank,
             // so this advances milestones rather than looping. Safe to attempt.
