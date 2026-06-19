@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.1.0
+// @version      1.2.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -73,8 +73,13 @@
                                 // resets, ~10-40x for Submerged). Adaptive avoids guessing it.
         vaporizeMinBoost: 1.5,  // adaptive: never fire a reset below this boost (skip worthless
                                 // resets while the engine is still rebuilding).
-        vaporizePeakDrop: 0.10, // adaptive: declare the peak passed (and vaporize) once
+        vaporizePeakDrop: 0.05, // adaptive: declare the peak passed (and vaporize) once
                                 // ln(boost)/elapsed falls this fraction below its running max.
+                                // Smaller = fires nearer the exact peak (higher efficiency)
+                                // but more sensitive to noise; in-game production is smooth,
+                                // so this can go low. Tune from window.FundamentalBot.report().
+        logCycles: true,        // record each vaporization cycle for tuning/validation.
+                                // Inspect via window.FundamentalBot.report().
         highStageResets: false, // stages 4-6 (collapse/merge/nucleation) are major prestige
                                 // resets with their own optimal-timing logic. Leave false to
                                 // let the GAME's auto-resets handle them; set true only if you
@@ -101,15 +106,17 @@
         return el ? (el.textContent || '').trim() : '';
     };
 
-    // Parse a number out of a stat element's text (handles "2.00", "1.50e3", and
-    // thousands separators). Returns null if absent/unparseable.
+    // Extract the first number from arbitrary text (handles "2.00", "1.50e3",
+    // thousands separators, and surrounding words like "Reset for 1.2e4 Clouds").
+    const numFromText = (t) => {
+        if (!t) return null;
+        const m = t.replace(/,/g, '').match(/-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/i);
+        return m ? parseFloat(m[0]) : null;
+    };
+    // Parse a number out of a stat element's text. Returns null if absent.
     const readNum = (selector) => {
         const el = document.querySelector(selector);
-        if (!el) return null;
-        const t = (el.textContent || '').trim().replace(/[,\s]/g, '');
-        if (!t) return null;
-        const n = parseFloat(t);
-        return Number.isFinite(n) ? n : null;
+        return el ? numFromText(el.textContent) : null;
     };
 
     // Active stage, read from the on-screen stage name (no globals are exposed).
@@ -192,22 +199,46 @@
     // tunes to the actual ramp and the 1e4 cloud softcap with no magic constant.
     let vapLastTs = 0;       // timestamp of last vaporization (ms)
     let vapPeakScore = 0;    // running max of ln(boost)/elapsed this cycle
+    const cycleLog = [];     // per-cycle records (capped)
+    let vapCycleN = 0;
 
     const resetVaporTracking = () => { vapLastTs = Date.now(); vapPeakScore = 0; };
 
-    const doVaporize = () => { clickIf('reset0Button'); resetVaporTracking(); };
+    // Record + perform a vaporization. `boost` is the production multiplier the
+    // reset would grant right now (from #vaporizationBoostTotal).
+    const doVaporize = (boost) => {
+        const elapsed = vapLastTs ? (Date.now() - vapLastTs) / 1000 : 0;
+        if (CONFIG.logCycles && elapsed > 0 && boost && boost > 1) {
+            const rho = Math.log(boost) / elapsed; // realized growth rate (1/s) — the objective
+            const rec = {
+                n: ++vapCycleN,
+                elapsed: +elapsed.toFixed(2),
+                boost: +boost.toFixed(3),
+                rho: +rho.toFixed(5),                       // ln(boost)/elapsed = what we maximize
+                peakRho: +vapPeakScore.toFixed(5),          // best ρ seen this cycle (adaptive only)
+                eff: vapPeakScore > 0 ? +(rho / vapPeakScore).toFixed(3) : null, // ρ_fire / ρ_peak
+                clouds: readNum('#footerStat3Span'),        // clouds before this reset
+                cloudsGain: numFromText(textOf('reset0Button')), // "Reset for X Clouds"
+            };
+            cycleLog.push(rec);
+            if (cycleLog.length > 500) cycleLog.shift();
+            console.log(`[Fundamental] vap #${rec.n}: ${rec.boost}x in ${rec.elapsed}s | ρ=${rec.rho}/s peak=${rec.peakRho} eff=${rec.eff} | +${rec.cloudsGain} clouds`);
+        }
+        clickIf('reset0Button');
+        resetVaporTracking();
+    };
 
     function vaporizeStep() {
+        if (!vapLastTs) vapLastTs = Date.now();
         const boost = readNum('#vaporizationBoostTotal > span');
         if (boost === null) return;
 
         if (CONFIG.vaporizeMode === 'fixed') {
-            if (boost >= CONFIG.vaporizeBoost) { doVaporize(); log('vaporize (fixed), boost', boost); }
+            if (boost >= CONFIG.vaporizeBoost) doVaporize(boost);
             return;
         }
 
-        // Adaptive: maximize ln(boost)/elapsed.
-        if (!vapLastTs) vapLastTs = Date.now();
+        // Adaptive: maximize ln(boost)/elapsed (renewal-reward optimum).
         const elapsed = (Date.now() - vapLastTs) / 1000;
         if (boost < CONFIG.vaporizeMinBoost || elapsed < 0.5) return; // too early / worthless
 
@@ -215,10 +246,29 @@
         if (score > vapPeakScore) {
             vapPeakScore = score; // still climbing — keep accumulating
         } else if (score <= vapPeakScore * (1 - CONFIG.vaporizePeakDrop)) {
-            doVaporize(); // peak passed — cashing out now maximizes growth rate
-            log('vaporize (adaptive), boost', boost, 'after', elapsed.toFixed(1), 's');
+            doVaporize(boost); // peak passed — cashing out now maximizes growth rate
         }
     }
+
+    // Summarize logged cycles. The adaptive rule is optimal when meanRho is at its
+    // max: if raising vaporizePeakDrop (firing later, higher boost) increases
+    // meanRho, we were firing too early, and vice-versa. meanBoost is the multiplier
+    // the rule naturally settles on.
+    const report = () => {
+        if (!cycleLog.length) { console.log('[Fundamental] no vaporization cycles logged yet'); return null; }
+        const mean = (k) => cycleLog.reduce((s, r) => s + (r[k] || 0), 0) / cycleLog.length;
+        const summary = {
+            mode: CONFIG.vaporizeMode,
+            cycles: cycleLog.length,
+            meanElapsedSec: +mean('elapsed').toFixed(2),
+            meanBoost: +mean('boost').toFixed(2),
+            meanRho_perSec: +mean('rho').toFixed(5), // higher = faster; the number to maximize
+            meanEff: +mean('eff').toFixed(3),
+        };
+        console.log('[Fundamental] vaporization summary:', summary);
+        console.table(cycleLog.slice(-50));
+        return { summary, cycles: cycleLog.slice() };
+    };
 
     // ---- Reset pass -----------------------------------------------------------
     // reset0 = discharge(1) / vaporization(2) / rank(3) / collapse(4) / merge(5) / nucleation(6).
@@ -327,7 +377,7 @@
         if (!exists('makeAllFooter')) { setTimeout(boot, 500); return; } // wait for game UI
         buildPanel();
         // expose manual controls for the console
-        window.FundamentalBot = { start, stop, tick, CONFIG };
+        window.FundamentalBot = { start, stop, tick, CONFIG, report, cycles: cycleLog };
         if (CONFIG.autoStart) start();
         console.log('[Fundamental] Autoplayer loaded. Toggle via the bottom-right button or window.FundamentalBot.start()/.stop().');
     }
