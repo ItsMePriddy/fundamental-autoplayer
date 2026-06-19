@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.0.1
+// @version      1.0.2
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -63,6 +63,14 @@
         setConfirmNone: true,   // set confirmation prompts to "None"
         doStageReset: true,     // attempt #reset1Button (stage reset) when ready
         doEndReset: true,       // attempt #reset2Button (end reset) when ready
+        vaporizeBoost: 2,       // stage 2: only vaporize when the production boost would
+                                // be at least this multiple (matches the game's own
+                                // default auto threshold). Raise it for fewer, bigger
+                                // resets and more time to buy structures between them.
+        highStageResets: false, // stages 4-6 (collapse/merge/nucleation) are major prestige
+                                // resets with their own optimal-timing logic. Leave false to
+                                // let the GAME's auto-resets handle them; set true only if you
+                                // want the bot to fire them whenever the button looks ready.
         verbose: false,         // log every action to console
     };
 
@@ -83,6 +91,17 @@
     const textOf = (id) => {
         const el = $(id);
         return el ? (el.textContent || '').trim() : '';
+    };
+
+    // Parse a number out of a stat element's text (handles "2.00", "1.50e3", and
+    // thousands separators). Returns null if absent/unparseable.
+    const readNum = (selector) => {
+        const el = document.querySelector(selector);
+        if (!el) return null;
+        const t = (el.textContent || '').trim().replace(/[,\s]/g, '');
+        if (!t) return null;
+        const n = parseFloat(t);
+        return Number.isFinite(n) ? n : null;
     };
 
     // Active stage, read from the on-screen stage name (no globals are exposed).
@@ -158,21 +177,37 @@
     }
 
     // ---- Reset pass -----------------------------------------------------------
+    // reset0 = discharge(1) / vaporization(2) / rank(3) / collapse(4) / merge(5) / nucleation(6).
+    // Each stage's reset has a very different cost/benefit, so they are handled
+    // individually rather than spammed uniformly.
     function fastResets() {
-        // reset0 = discharge(1) / vaporization(2) / rank(3) / collapse(4) / merge(5) / nucleation(6).
-        //
-        // For stages 1-3 the reset is a cheap, repeatable, self-guarding action, so
-        // we just attempt it every tick and let the game's own *ResetCheck decide.
-        // We must NOT gate it on the button text: a discharge can be available while
-        // the label still reads "Next goal is X Energy" (the label only flips to
-        // "Reset to regain spent Energy" once you've spent below your peak), so a
-        // text gate would wrongly skip valid discharges. Confirmations are off
-        // (set to "None"), so the click never blocks.
-        //
-        // Stages 4-6 are big prestige resets — only fire them when the label clearly
-        // says they're actionable, to avoid resetting prematurely.
         const s = activeStage();
-        if (s <= 3 || resetReady('reset0Button')) { clickIf('reset0Button'); log('reset0 stage', s); }
+        if (s === 1) {
+            // Discharge: cheap and the regain is always beneficial — the standard
+            // early strategy is to discharge constantly. (Don't gate on the label:
+            // it can read "Next goal is X Energy" even when a discharge is available.)
+            clickIf('reset0Button');
+        } else if (s === 2) {
+            // Vaporization: a prestige-style reset. Firing it the instant any clouds
+            // are available loops forever and starves structure/upgrade buying. Only
+            // vaporize when the resulting production boost is worth it. The game shows
+            // that exact multiplier in #vaporizationBoostTotal and its own auto uses a
+            // default threshold of 2x.
+            const boost = readNum('#vaporizationBoostTotal > span');
+            if (boost !== null && boost >= CONFIG.vaporizeBoost) {
+                clickIf('reset0Button');
+                log('vaporize, boost', boost);
+            }
+        } else if (s === 3) {
+            // Rank: hard-gated internally by a mass requirement and capped at maxRank,
+            // so this advances milestones rather than looping. Safe to attempt.
+            clickIf('reset0Button');
+        } else if (CONFIG.highStageResets && resetReady('reset0Button')) {
+            // Collapse / merge / nucleation: big prestige resets. Off by default —
+            // prefer the game's own auto-resets, which time these optimally.
+            clickIf('reset0Button');
+            log('high-stage reset', s);
+        }
     }
 
     function slowResets() {
