@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.3.0
+// @version      1.4.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -63,21 +63,20 @@
         setConfirmNone: true,   // set confirmation prompts to "None"
         doStageReset: true,     // attempt #reset1Button (stage reset) when ready
         doEndReset: true,       // attempt #reset2Button (end reset) when ready
-        vaporizeMode: 'adaptive', // stage 2 timing: 'adaptive' (recommended, speed-optimal)
-                                // maximizes the realized growth rate ln(boost)/elapsed and
-                                // self-tunes to the rebuild ramp + softcap; 'fixed' uses the
-                                // vaporizeBoost threshold below.
-        vaporizeBoost: 2,       // 'fixed' mode only: vaporize when the production boost reaches
-                                // this multiple. 2 = the game's hands-off default (NOT speed-
-                                // optimal — a full engine wipe per reset favors fewer/bigger
-                                // resets, ~10-40x for Submerged). Adaptive avoids guessing it.
-        vaporizeMinBoost: 1.5,  // adaptive: never fire a reset below this boost (skip worthless
-                                // resets while the engine is still rebuilding).
-        vaporizePeakDrop: 0.05, // adaptive: declare the peak passed (and vaporize) once
-                                // ln(boost)/elapsed falls this fraction below its running max.
-                                // Smaller = fires nearer the exact peak (higher efficiency)
-                                // but more sensitive to noise; in-game production is smooth,
-                                // so this can go low. Tune from window.FundamentalBot.report().
+        vaporizeMode: 'fixed',  // stage 2 timing. 'fixed' is recommended: a headless full-game
+                                // simulation of Submerged shows fixed boost ~2.25 is optimal and
+                                // the curve is flat across 2-3 (time-to-target varies <6%).
+                                // 'adaptive' is NOT recommended for Submerged — validated to
+                                // underperform badly there (the cloud divisor + effect softcap
+                                // make ln(boost)/elapsed peak at a worthless ~1.05, causing
+                                // hundreds of tiny resets). Kept only for experimentation.
+        vaporizeBoost: 2.25,    // 'fixed' mode: vaporize when the production boost reaches this
+                                // multiple. ~2.25 was the empirical optimum for Submerged; the
+                                // game's default of 2 is essentially as good. Higher (5+) is
+                                // slower (too few resets).
+        vaporizeMinBoost: 1.5,  // adaptive only: never fire below this boost.
+        vaporizePeakDrop: 0.05, // adaptive only: fire once ln(boost)/elapsed drops this fraction
+                                // below its running max.
         logCycles: true,        // record each vaporization cycle for tuning/validation.
                                 // Inspect via window.FundamentalBot.report().
         highStageResets: false, // stages 4-6 (collapse/merge/nucleation) are major prestige
