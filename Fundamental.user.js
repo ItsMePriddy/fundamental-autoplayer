@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.0.0
+// @version      1.0.1
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -85,6 +85,15 @@
         return el ? (el.textContent || '').trim() : '';
     };
 
+    // Active stage, read from the on-screen stage name (no globals are exposed).
+    // Index matches the game's word list in Player.ts.
+    const STAGE_WORDS = ['', 'microworld', 'submerged', 'accretion', 'interstellar', 'intergalactic', 'abyss'];
+    const activeStage = () => {
+        const w = textOf('stageWord').toLowerCase();
+        const i = STAGE_WORDS.findIndex((s) => s && w.startsWith(s));
+        return i > 0 ? i : 1;
+    };
+
     // A reset/action button is "ready" if it exists, isn't disabled, and its label
     // doesn't read like a requirement message.
     const resetReady = (id) => {
@@ -150,9 +159,20 @@
 
     // ---- Reset pass -----------------------------------------------------------
     function fastResets() {
-        // reset0 = discharge / vaporization / rank / collapse / merge / nucleation.
-        // Cheap and meant to be spammed when ready.
-        if (resetReady('reset0Button')) { clickIf('reset0Button'); log('reset0'); }
+        // reset0 = discharge(1) / vaporization(2) / rank(3) / collapse(4) / merge(5) / nucleation(6).
+        //
+        // For stages 1-3 the reset is a cheap, repeatable, self-guarding action, so
+        // we just attempt it every tick and let the game's own *ResetCheck decide.
+        // We must NOT gate it on the button text: a discharge can be available while
+        // the label still reads "Next goal is X Energy" (the label only flips to
+        // "Reset to regain spent Energy" once you've spent below your peak), so a
+        // text gate would wrongly skip valid discharges. Confirmations are off
+        // (set to "None"), so the click never blocks.
+        //
+        // Stages 4-6 are big prestige resets — only fire them when the label clearly
+        // says they're actionable, to avoid resetting prematurely.
+        const s = activeStage();
+        if (s <= 3 || resetReady('reset0Button')) { clickIf('reset0Button'); log('reset0 stage', s); }
     }
 
     function slowResets() {
