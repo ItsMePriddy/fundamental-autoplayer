@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.2.0
+// @version      1.3.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -160,6 +160,20 @@
 
     const log = (...a) => { if (CONFIG.verbose) console.log('[Fundamental]', ...a); };
 
+    // Rolling event log for the on-screen HUD.
+    const eventLog = [];
+    const pushLog = (msg) => {
+        eventLog.push({ t: Date.now(), msg });
+        if (eventLog.length > 60) eventLog.shift();
+    };
+    const STAGE_NAMES = ['', 'Microworld', 'Submerged', 'Accretion', 'Interstellar', 'Intergalactic', 'Abyss'];
+    const fmtDur = (s) => {
+        s = Math.max(0, Math.floor(s));
+        const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+        return h ? `${h}:${String(m).padStart(2, '0')}:${String(x).padStart(2, '0')}`
+                 : `${m}:${String(x).padStart(2, '0')}`;
+    };
+
     // ---- Offline-time dialog --------------------------------------------------
     // On (re)focus the game shows an alert: "Accept and use N seconds worth of
     // Offline time?". It blocks everything until answered. Auto-accept it, but
@@ -224,6 +238,7 @@
             if (cycleLog.length > 500) cycleLog.shift();
             console.log(`[Fundamental] vap #${rec.n}: ${rec.boost}x in ${rec.elapsed}s | ρ=${rec.rho}/s peak=${rec.peakRho} eff=${rec.eff} | +${rec.cloudsGain} clouds`);
         }
+        pushLog(`💨 vaporize ${boost ? boost.toFixed(2) : '?'}× · ${elapsed.toFixed(1)}s`);
         clickIf('reset0Button');
         resetVaporTracking();
     };
@@ -278,6 +293,7 @@
     function fastResets() {
         const s = activeStage();
         if (s !== 2 && prevStage === 2) resetVaporTracking(); // left stage 2 — start fresh on return
+        if (s !== prevStage && prevStage !== 0) pushLog(`🪐 stage → ${STAGE_NAMES[s] || s}`);
         prevStage = s;
 
         if (s === 1) {
@@ -315,6 +331,7 @@
 
     function tick() {
         try {
+            tickCount++;
             acceptOfflineDialog();
             applySettings();
             buyEverything();
@@ -324,18 +341,24 @@
                 lastSlow = now;
                 slowResets();
             }
+            updateHud();
         } catch (e) {
             console.error('[Fundamental] tick error', e);
         }
     }
 
+    let startTs = 0;
+    let tickCount = 0;
+
     function start() {
         if (running) return;
         running = true;
         lastSlow = 0;
+        startTs = Date.now();
+        pushLog('▶ autoplayer started');
         tick();
         mainTimer = setInterval(tick, CONFIG.tickMs);
-        updatePanel();
+        updateHud();
         log('started');
     }
 
@@ -343,43 +366,212 @@
         running = false;
         if (mainTimer) clearInterval(mainTimer);
         mainTimer = null;
-        updatePanel();
+        pushLog('⏸ autoplayer stopped');
+        updateHud();
         log('stopped');
     }
 
-    // ---- Control panel --------------------------------------------------------
-    let panelBtn = null;
-    function updatePanel() {
-        if (!panelBtn) return;
-        panelBtn.textContent = running ? '⏸ Auto: ON' : '▶ Auto: OFF';
-        panelBtn.style.background = running ? '#1f7a1f' : '#7a1f1f';
+    // ---- HUD ------------------------------------------------------------------
+    let hud = null;
+    const el = {}; // cached field elements
+
+    const HUD_CSS = `
+    #fbHud{position:fixed;z-index:2147483600;width:268px;font-family:ui-monospace,Menlo,Consolas,monospace;
+        font-size:11px;color:#cfe8ff;background:linear-gradient(160deg,rgba(18,22,38,.94),rgba(12,14,26,.96));
+        border:1px solid rgba(120,170,255,.28);border-radius:12px;backdrop-filter:blur(8px);
+        box-shadow:0 8px 28px rgba(0,0,0,.5),inset 0 0 0 1px rgba(255,255,255,.03);overflow:hidden;user-select:none;}
+    #fbHead{display:flex;align-items:center;gap:7px;padding:8px 10px;cursor:grab;
+        background:linear-gradient(90deg,rgba(80,120,255,.20),rgba(160,90,255,.12));border-bottom:1px solid rgba(120,170,255,.18);}
+    #fbHead:active{cursor:grabbing;}
+    #fbDot{width:9px;height:9px;border-radius:50%;background:#4ade80;box-shadow:0 0 8px #4ade80;flex:0 0 auto;}
+    #fbDot.off{background:#f87171;box-shadow:0 0 8px #f87171;animation:none;}
+    #fbDot.on{animation:fbPulse 1.4s ease-in-out infinite;}
+    @keyframes fbPulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.45;transform:scale(.78);}}
+    #fbTitle{font-weight:700;letter-spacing:.3px;color:#eaf2ff;flex:1;font-size:12px;}
+    .fbHbtn{cursor:pointer;color:#9fb6d6;padding:1px 6px;border-radius:6px;border:1px solid rgba(120,170,255,.25);
+        background:rgba(255,255,255,.04);font-size:11px;}
+    .fbHbtn:hover{color:#fff;background:rgba(120,170,255,.22);}
+    #fbBody{padding:8px 10px 10px;display:flex;flex-direction:column;gap:9px;}
+    .fbSec{display:flex;flex-direction:column;gap:3px;}
+    .fbSecT{font-size:9px;letter-spacing:1.4px;text-transform:uppercase;color:#7fa8d8;opacity:.8;margin-bottom:1px;}
+    .fbRow{display:flex;justify-content:space-between;gap:8px;align-items:baseline;}
+    .fbRow b{color:#fff;font-weight:600;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .fbK{color:#9fb6d6;flex:0 0 auto;}
+    #fbStage{font-weight:700;}
+    #fbSpark{display:flex;align-items:flex-end;gap:1px;height:26px;margin-top:2px;
+        background:rgba(255,255,255,.03);border-radius:5px;padding:2px 3px;}
+    #fbSpark i{flex:1;background:linear-gradient(180deg,#67e8f9,#6366f1);border-radius:1px;min-height:1px;opacity:.85;}
+    #fbLog{display:flex;flex-direction:column;gap:2px;max-height:108px;overflow-y:auto;
+        background:rgba(0,0,0,.25);border-radius:6px;padding:5px 6px;}
+    #fbLog div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#bcd0ec;}
+    #fbLog time{color:#6f86a8;margin-right:5px;}
+    #fbHud.min #fbBody{display:none;}
+    #fbLog::-webkit-scrollbar{width:6px;}#fbLog::-webkit-scrollbar-thumb{background:rgba(120,170,255,.3);border-radius:3px;}
+    `;
+
+    function row(k, id) {
+        return `<div class="fbRow"><span class="fbK">${k}</span><b id="${id}">—</b></div>`;
     }
 
-    function buildPanel() {
-        const wrap = document.createElement('div');
-        wrap.style.cssText =
-            'position:fixed;bottom:8px;right:8px;z-index:99999;display:flex;gap:6px;' +
-            'font-family:sans-serif;font-size:12px;align-items:center;';
+    function buildHud() {
+        const style = document.createElement('style');
+        style.textContent = HUD_CSS;
+        document.head.appendChild(style);
 
-        panelBtn = document.createElement('button');
-        panelBtn.style.cssText =
-            'color:#fff;border:1px solid #fff3;border-radius:6px;padding:6px 10px;' +
-            'cursor:pointer;font-weight:bold;';
-        panelBtn.onclick = () => (running ? stop() : start());
+        hud = document.createElement('div');
+        hud.id = 'fbHud';
+        hud.innerHTML = `
+            <div id="fbHead">
+                <span id="fbDot"></span>
+                <span id="fbTitle">⚛ Fundamental Bot</span>
+                <span class="fbHbtn" id="fbToggle">⏸</span>
+                <span class="fbHbtn" id="fbMin">▁</span>
+            </div>
+            <div id="fbBody">
+                <div class="fbSec">
+                    <div class="fbSecT">Script</div>
+                    ${row('State', 'fbState')}
+                    ${row('Uptime', 'fbUptime')}
+                    ${row('Ticks', 'fbTicks')}
+                </div>
+                <div class="fbSec">
+                    <div class="fbSecT">Game</div>
+                    <div class="fbRow"><span class="fbK">Stage</span><b id="fbStage">—</b></div>
+                    ${row('', 'fbStat1')}
+                    ${row('', 'fbStat2')}
+                    ${row('', 'fbStat3')}
+                    ${row('Goal', 'fbGoal')}
+                </div>
+                <div class="fbSec" id="fbVapSec">
+                    <div class="fbSecT">Vaporization · <span id="fbVapMode">—</span></div>
+                    ${row('Boost now', 'fbBoost')}
+                    ${row('ρ now / peak', 'fbRho')}
+                    ${row('In cycle', 'fbCyc')}
+                    ${row('Mean ρ (n)', 'fbMean')}
+                    <div id="fbSpark"></div>
+                </div>
+                <div class="fbSec">
+                    <div class="fbSecT">Event log</div>
+                    <div id="fbLog"></div>
+                </div>
+            </div>`;
+        document.body.appendChild(hud);
 
-        wrap.appendChild(panelBtn);
-        document.body.appendChild(wrap);
-        updatePanel();
+        // cache fields
+        ['fbDot','fbState','fbUptime','fbTicks','fbStage','fbStat1','fbStat2','fbStat3','fbGoal',
+         'fbVapSec','fbVapMode','fbBoost','fbRho','fbCyc','fbMean','fbSpark','fbLog','fbToggle']
+            .forEach((id) => { el[id] = $(id); });
+
+        el.fbToggle.onclick = () => (running ? stop() : start());
+        $('fbMin').onclick = () => {
+            hud.classList.toggle('min');
+            localStorage.setItem('fbHudMin', hud.classList.contains('min') ? '1' : '0');
+        };
+        if (localStorage.getItem('fbHudMin') === '1') hud.classList.add('min');
+
+        // position (restore + draggable)
+        const pos = localStorage.getItem('fbHudPos');
+        if (pos) { try { const p = JSON.parse(pos); hud.style.left = p.x + 'px'; hud.style.top = p.y + 'px'; } catch (e) { /* ignore */ } }
+        else { hud.style.right = '10px'; hud.style.top = '64px'; }
+        makeDraggable($('fbHead'));
+
+        updateHud();
+    }
+
+    function makeDraggable(handle) {
+        let sx, sy, ox, oy, dragging = false;
+        handle.addEventListener('mousedown', (e) => {
+            if (e.target.classList.contains('fbHbtn')) return;
+            dragging = true;
+            const r = hud.getBoundingClientRect();
+            ox = r.left; oy = r.top; sx = e.clientX; sy = e.clientY;
+            hud.style.right = 'auto';
+            e.preventDefault();
+        });
+        window.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            const x = Math.max(0, Math.min(window.innerWidth - 60, ox + e.clientX - sx));
+            const y = Math.max(0, Math.min(window.innerHeight - 24, oy + e.clientY - sy));
+            hud.style.left = x + 'px'; hud.style.top = y + 'px';
+        });
+        window.addEventListener('mouseup', () => {
+            if (!dragging) return;
+            dragging = false;
+            const r = hud.getBoundingClientRect();
+            localStorage.setItem('fbHudPos', JSON.stringify({ x: Math.round(r.left), y: Math.round(r.top) }));
+        });
+    }
+
+    function statText(id) { const e = $(id); return e ? e.textContent.replace(/\s+/g, ' ').trim() : ''; }
+
+    let lastLogLen = -1;
+    function updateHud() {
+        if (!hud) return;
+        // script
+        el.fbDot.className = running ? 'on' : 'off';
+        el.fbToggle.textContent = running ? '⏸' : '▶';
+        el.fbToggle.title = running ? 'Pause autoplayer' : 'Start autoplayer';
+        el.fbState.textContent = running ? 'running' : 'stopped';
+        el.fbState.style.color = running ? '#4ade80' : '#f87171';
+        el.fbUptime.textContent = running && startTs ? fmtDur((Date.now() - startTs) / 1000) : '—';
+        el.fbTicks.textContent = tickCount.toLocaleString();
+
+        // game
+        const s = activeStage();
+        const sw = $('stageWord');
+        el.fbStage.textContent = sw ? sw.textContent.trim() : (STAGE_NAMES[s] || '—');
+        if (sw) el.fbStage.style.color = getComputedStyle(sw).color;
+        el.fbStat1.textContent = statText('footerStat1') || '—';
+        el.fbStat2.textContent = statText('footerStat2') || '—';
+        el.fbStat3.textContent = statText('footerStat3') || '—';
+        el.fbGoal.textContent = textOf('reset0Button') || '—';
+
+        // vaporization (only meaningful on stage 2)
+        const onS2 = s === 2;
+        el.fbVapSec.style.opacity = onS2 ? '1' : '0.4';
+        el.fbVapMode.textContent = CONFIG.vaporizeMode;
+        if (onS2) {
+            const boost = readNum('#vaporizationBoostTotal > span');
+            const elapsed = vapLastTs ? (Date.now() - vapLastTs) / 1000 : 0;
+            const rho = boost && boost > 1 && elapsed > 0 ? Math.log(boost) / elapsed : 0;
+            el.fbBoost.textContent = boost != null ? boost.toFixed(2) + '×' : '—';
+            el.fbRho.textContent = `${rho.toFixed(4)} / ${vapPeakScore.toFixed(4)}`;
+            el.fbCyc.textContent = fmtDur(elapsed) + ' s';
+        } else {
+            el.fbBoost.textContent = el.fbRho.textContent = el.fbCyc.textContent = '—';
+        }
+        if (cycleLog.length) {
+            const m = cycleLog.reduce((a, r) => a + r.rho, 0) / cycleLog.length;
+            el.fbMean.textContent = `${m.toFixed(4)} (${cycleLog.length})`;
+        } else { el.fbMean.textContent = '—'; }
+
+        // sparkline of recent ρ
+        const recent = cycleLog.slice(-26);
+        if (recent.length) {
+            const max = Math.max(...recent.map((r) => r.rho)) || 1;
+            el.fbSpark.innerHTML = recent.map((r) =>
+                `<i style="height:${Math.max(2, Math.round((r.rho / max) * 24))}px"></i>`).join('');
+        }
+
+        // event log (only re-render on change)
+        if (eventLog.length !== lastLogLen) {
+            lastLogLen = eventLog.length;
+            el.fbLog.innerHTML = eventLog.slice(-12).reverse().map((e) => {
+                const d = new Date(e.t);
+                const ts = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+                return `<div><time>${ts}</time>${e.msg}</div>`;
+            }).join('');
+        }
     }
 
     // ---- Boot -----------------------------------------------------------------
     function boot() {
         if (!exists('makeAllFooter')) { setTimeout(boot, 500); return; } // wait for game UI
-        buildPanel();
+        buildHud();
         // expose manual controls for the console
-        window.FundamentalBot = { start, stop, tick, CONFIG, report, cycles: cycleLog };
+        window.FundamentalBot = { start, stop, tick, CONFIG, report, cycles: cycleLog, log: eventLog };
         if (CONFIG.autoStart) start();
-        console.log('[Fundamental] Autoplayer loaded. Toggle via the bottom-right button or window.FundamentalBot.start()/.stop().');
+        console.log('[Fundamental] Autoplayer loaded. Use the on-screen HUD or window.FundamentalBot.start()/.stop()/.report().');
     }
 
     boot();
