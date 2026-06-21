@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.5.1
+// @version      1.6.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -79,10 +79,16 @@
                                 // below its running max.
         logCycles: true,        // record each vaporization cycle for tuning/validation.
                                 // Inspect via window.FundamentalBot.report().
-        highStageResets: false, // stages 4-6 (collapse/merge/nucleation) are major prestige
-                                // resets with their own optimal-timing logic. Leave false to
-                                // let the GAME's auto-resets handle them; set true only if you
-                                // want the bot to fire them whenever the button looks ready.
+        highStageResets: false, // stages 5-6 (merge/nucleation) are major prestige resets with
+                                // their own optimal-timing logic. Leave false to let the GAME's
+                                // auto-resets handle them. (Stage 4 collapse has dedicated logic.)
+        collapseBoost: 4,       // stage 4: collapse when the production boost (#collapseBoostTotal)
+                                // reaches this multiple. Higher than vaporization's 2.25 — each
+                                // collapse resets more, and later collapses unlock elements/upgrades.
+        collapseMaxWaitMs: 90000, // anti-hang: also collapse after this long at a modest boost, so
+                                // collapse-gated elements and mass-locked upgrades keep unlocking
+                                // (a pure boost gate can stall when a collapse is what's needed).
+        collapseMinBoost: 1.3,  // floor for the anti-hang collapse — don't fire a worthless reset.
         verbose: false,         // log every action to console
     };
 
@@ -284,6 +290,30 @@
         return { summary, cycles: cycleLog.slice() };
     };
 
+    // ---- Collapse timing (stage 4) -------------------------------------------
+    // Collapse is unlike vaporization: elements only unlock ON a collapse and some
+    // upgrades are gated behind mass thresholds, so a pure boost gate can stall when
+    // a collapse is exactly what's needed to progress. Dual trigger: fire on a strong
+    // production boost, OR periodically (anti-hang) at a modest boost so collapse-gated
+    // elements / mass-locked upgrades keep unlocking. #collapseBoostTotal disappears
+    // once the game's own auto-collapse takes over (strangeness lvl 3) — then we leave
+    // it to the game. (Elements that are "ready" are auto-bought by the collapse itself.)
+    let collapseLastTs = 0;
+    function collapseStep() {
+        if (!collapseLastTs) collapseLastTs = Date.now();
+        if (!/collapse/i.test(textOf('reset0Button'))) return; // not the collapse reset / not actionable
+        const boost = readNum('#collapseBoostTotal > span'); // null when the game auto-handles it
+        const elapsed = (Date.now() - collapseLastTs) / 1000;
+        let fire = false;
+        if (boost != null && boost >= CONFIG.collapseBoost) fire = true;
+        else if (elapsed >= CONFIG.collapseMaxWaitMs / 1000 && (boost == null || boost >= CONFIG.collapseMinBoost)) fire = true;
+        if (fire) {
+            clickIf('reset0Button');
+            collapseLastTs = Date.now();
+            pushLog('💥 collapse' + (boost != null ? ' ' + boost.toFixed(2) + '×' : ''));
+        }
+    }
+
     // ---- Reset pass -----------------------------------------------------------
     // reset0 = discharge(1) / vaporization(2) / rank(3) / collapse(4) / merge(5) / nucleation(6).
     // Each stage's reset has a very different cost/benefit, so they are handled
@@ -292,6 +322,7 @@
     function fastResets() {
         const s = activeStage();
         if (s !== 2 && prevStage === 2) resetVaporTracking(); // left stage 2 — start fresh on return
+        if (s !== 4 && prevStage === 4) collapseLastTs = 0;   // left stage 4 — reset collapse cadence
         if (s !== prevStage && prevStage !== 0) pushLog(`🪐 stage → ${STAGE_NAMES[s] || s}`);
         prevStage = s;
 
@@ -306,9 +337,11 @@
             // Rank: hard-gated internally by a mass requirement and capped at maxRank,
             // so this advances milestones rather than looping. Safe to attempt.
             clickIf('reset0Button');
+        } else if (s === 4) {
+            collapseStep();
         } else if (CONFIG.highStageResets && resetReady('reset0Button')) {
-            // Collapse / merge / nucleation: big prestige resets. Off by default —
-            // prefer the game's own auto-resets, which time these optimally.
+            // Merge / nucleation: big prestige resets. Off by default — prefer the
+            // game's own auto-resets, which time these optimally.
             clickIf('reset0Button');
             log('high-stage reset', s);
         }
@@ -375,282 +408,44 @@
     const el = {}; // cached field elements
 
     const HUD_CSS = `
-    #fbHud{position:fixed;inset:0;z-index:2147483600;display:flex;flex-direction:column;font-family:'Inter',system-ui,sans-serif;
-        color:#e8edf6;--acc:#f4a93a;overflow:hidden;user-select:none;
-        background:radial-gradient(1500px 860px at 72% -12%,color-mix(in srgb,var(--acc) 11%,#0d0b16) 0%,#0a0b13 56%,#06060c 100%);}
-    #fbHud.min{bottom:auto;}
-    #fbHud .fb-mono{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-variant-numeric:tabular-nums;}
-    #fbHead{display:flex;align-items:center;gap:14px;padding:14px 26px;flex:0 0 auto;
-        background:linear-gradient(90deg,color-mix(in srgb,var(--acc) 22%,transparent),transparent 60%);border-bottom:1px solid rgba(255,255,255,.08);}
-    .fb-orb{width:38px;height:38px;border-radius:50%;flex:0 0 auto;background:radial-gradient(circle at 32% 30%,#ffffffaa,var(--acc) 50%,#000a 96%);
-        box-shadow:0 0 18px color-mix(in srgb,var(--acc) 55%,transparent),inset -5px -5px 10px rgba(0,0,0,.4);}
-    #fbStage{font-size:19px;font-weight:700;color:#fff;line-height:1.1;}
-    #fbSub{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--acc);opacity:.92;}
-    .fb-res{margin-left:auto;text-align:right;}
-    .fb-res .l{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:#8a93a8;}
-    .fb-res .v{font-size:20px;font-weight:700;color:#fff;}
-    #fbBot{display:flex;align-items:center;gap:8px;padding:6px 11px;border-radius:10px;background:rgba(74,222,128,.1);border:1px solid rgba(74,222,128,.22);}
-    #fbBot.off{background:rgba(248,113,113,.1);border-color:rgba(248,113,113,.25);}
-    #fbDot{width:8px;height:8px;border-radius:50%;background:#4ade80;box-shadow:0 0 8px #4ade80;flex:0 0 auto;animation:fbPulse 1.5s ease-in-out infinite;}
-    #fbDot.off{background:#f87171;box-shadow:0 0 8px #f87171;animation:none;}
-    @keyframes fbPulse{0%,100%{opacity:1;}50%{opacity:.4;}}
-    .fb-bs{font-size:11px;font-weight:600;color:#dfe7f4;}
-    .fb-bm{font-size:9px;color:#9aa3b8;}
-    .fb-hb{cursor:pointer;color:#aab4c8;width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);font-size:12px;}
-    .fb-hb:hover{color:#fff;background:rgba(255,255,255,.12);}
-    #fbBody{flex:1 1 auto;overflow:auto;padding:18px 26px 22px;display:flex;flex-direction:column;gap:16px;}
-    #fbHud.min #fbBody{display:none;}
-    #fbChips{display:flex;gap:9px;flex-wrap:wrap;}
-    .fb-chip{flex:1;min-width:92px;padding:8px 11px;border-radius:11px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);}
-    .fb-chip .k{font-size:9px;letter-spacing:1px;text-transform:uppercase;color:#828ba0;white-space:nowrap;}
-    .fb-chip .v{font-size:15px;font-weight:600;color:#fff;margin-top:2px;white-space:nowrap;}
-    .fb-cols{display:grid;grid-template-columns:1fr 400px;gap:20px;align-items:start;flex:1 1 auto;}
-    @media(max-width:880px){#fbHud .fb-cols{grid-template-columns:1fr;}}
-    #fbRows{display:grid;grid-template-columns:repeat(auto-fit,minmax(248px,1fr));gap:9px;}
-    .fb-t{font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#8a93a8;margin-bottom:9px;display:flex;align-items:center;gap:8px;}
-    .fb-t::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(255,255,255,.12),transparent);}
-    .fb-glass{background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:13px 15px;}
-    .fb-brow{display:grid;grid-template-columns:34px 1fr auto 40px;gap:11px;align-items:center;padding:9px 11px;border-radius:11px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.05);}
-    .fb-brow.lk{opacity:.4;}
-    .fb-bi{width:34px;height:34px;image-rendering:pixelated;border-radius:7px;object-fit:contain;}
-    .fb-bn{font-size:14px;font-weight:600;color:#fff;display:flex;align-items:center;gap:7px;}
-    .fb-own{font-size:10px;font-weight:600;color:var(--acc);background:color-mix(in srgb,var(--acc) 16%,transparent);padding:1px 7px;border-radius:20px;}
-    .fb-bsub{font-size:11px;color:#9aa3b8;margin-top:2px;}
-    .fb-bsub .fb-pr{color:#7fdca0;}
-    .fb-bcost{text-align:right;font-size:11px;color:#aeb6c8;line-height:1.35;}
-    .fb-bcost b{color:#fff;font-weight:600;}
-    .fb-tgl{width:38px;height:21px;border-radius:20px;background:rgba(74,222,128,.2);border:1px solid rgba(74,222,128,.4);position:relative;}
-    .fb-tgl::after{content:'';position:absolute;top:2px;right:2px;width:15px;height:15px;border-radius:50%;background:#4ade80;}
-    .fb-tgl.off{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);}
-    .fb-tgl.off::after{left:2px;right:auto;background:#6b7280;}
-    #fbEffect{margin-top:4px;padding:8px 12px;border-radius:10px;background:rgba(160,90,255,.08);border:1px solid rgba(160,90,255,.16);font-size:11px;color:#c9b8f0;}
-    .fb-rcard{background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);border-radius:13px;padding:11px 14px;margin-bottom:11px;}
-    .fb-rh{display:flex;align-items:center;gap:9px;margin-bottom:6px;}
-    .fb-rt{font-size:12px;font-weight:700;color:#fff;}
-    .fb-tag{margin-left:auto;font-size:9px;letter-spacing:.5px;text-transform:uppercase;padding:3px 9px;border-radius:20px;}
-    .fb-tag.done{background:rgba(74,222,128,.15);color:#7fdca0;}
-    .fb-tag.wait{background:color-mix(in srgb,var(--acc) 15%,transparent);color:var(--acc);}
-    .fb-rd{font-size:10.5px;color:#97a0b4;line-height:1.45;margin-bottom:7px;}
-    .fb-bar{height:7px;border-radius:5px;background:rgba(255,255,255,.07);overflow:hidden;margin:7px 0 5px;}
-    .fb-bar>i{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,var(--acc),#ffffff88);}
-    .fb-rs{display:flex;justify-content:space-between;font-size:10.5px;color:#aeb6c8;}
-    .fb-rs b{color:#fff;}
-    .fb-reward{font-size:11px;color:#c9b8f0;margin-top:7px;}
-    #fbSpark{display:flex;align-items:flex-end;gap:2px;height:30px;margin-top:7px;}
-    #fbSpark i{flex:1;background:linear-gradient(180deg,var(--acc),#ffffff55);border-radius:2px;min-height:2px;opacity:.85;}
-    #fbNav{display:flex;gap:8px;align-items:center;}
-    .fb-nav{padding:7px 16px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);font-size:12px;color:#cfd6e6;cursor:pointer;}
-    .fb-nav:hover{background:rgba(255,255,255,.1);color:#fff;}
-    #fbLog{display:flex;flex-direction:column;gap:2px;max-height:80px;overflow-y:auto;background:rgba(0,0,0,.22);border-radius:8px;padding:6px 9px;}
-    #fbLog div{font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#bcd0ec;font-family:ui-monospace,Menlo,monospace;}
-    #fbLog time{color:#6f86a8;margin-right:5px;}
-    #fbLog::-webkit-scrollbar{width:6px;}#fbLog::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18);border-radius:3px;}
+    #fbBar{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:2147483600;
+        display:flex;align-items:center;gap:11px;padding:9px 18px;border-radius:999px;cursor:pointer;
+        font-family:'Inter',system-ui,sans-serif;font-size:13px;color:#e8edf6;user-select:none;
+        background:linear-gradient(165deg,rgba(20,18,34,.92),rgba(10,11,20,.95));
+        border:1px solid rgba(120,170,255,.25);backdrop-filter:blur(10px);box-shadow:0 6px 22px rgba(0,0,0,.45);}
+    #fbBar:hover{border-color:rgba(120,170,255,.55);}
+    #fbBar.off{border-color:rgba(248,113,113,.4);}
+    #fbBar .d{width:9px;height:9px;border-radius:50%;background:#4ade80;box-shadow:0 0 9px #4ade80;animation:fbP 1.5s ease-in-out infinite;flex:0 0 auto;}
+    #fbBar.off .d{background:#f87171;box-shadow:0 0 9px #f87171;animation:none;}
+    @keyframes fbP{0%,100%{opacity:1;}50%{opacity:.35;}}
+    #fbBar b{font-weight:700;letter-spacing:.2px;}
+    #fbBar .s{color:#9fb6d6;font-variant-numeric:tabular-nums;}
+    #fbBar .act{font-size:14px;width:18px;text-align:center;color:#cfe0ff;}
     `;
-
-    // ---- small HUD helpers ----
-    const ROMAN = ['', 'I', 'II', 'III', 'IV', 'V', 'VI'];
-    const RESET0_NAME = ['', 'Discharge', 'Vaporization', 'Rank', 'Collapse', 'Merge', 'Nucleation'];
-    const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-    const statText = (id) => { const e = $(id); return e ? e.textContent.replace(/\s+/g, ' ').trim() : ''; };
-    const splitStat = (txt) => { const i = txt.indexOf(':'); return i < 0 ? ['', txt] : [txt.slice(0, i).trim(), txt.slice(i + 1).trim()]; };
-    const fmtNum = (n) => (n >= 1e6 || (n > 0 && n < 1e-3)) ? n.toExponential(2) : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
-    const trimDesc = (t) => { t = (t || '').replace(/\s+/g, ' ').trim(); return t.length > 96 ? t.slice(0, 95) + '…' : t; };
 
     function buildHud() {
         const style = document.createElement('style');
         style.textContent = HUD_CSS;
         document.head.appendChild(style);
-
-        const rows = [];
-        for (let i = 1; i <= 6; i++) {
-            rows.push(`<div class="fb-brow" id="fbB${i}" style="display:none">
-                <img class="fb-bi" id="fbB${i}Icon" alt="">
-                <div><div class="fb-bn"><span id="fbB${i}Name"></span><span class="fb-own" id="fbB${i}Own"></span></div>
-                <div class="fb-bsub fb-mono"><span id="fbB${i}Cur"></span> · <span class="fb-pr" id="fbB${i}Prod"></span></div></div>
-                <div class="fb-bcost fb-mono" id="fbB${i}Cost"></div>
-                <div class="fb-tgl" id="fbB${i}Tgl"></div></div>`);
-        }
-
         hud = document.createElement('div');
-        hud.id = 'fbHud';
-        hud.innerHTML = `
-            <div id="fbHead">
-                <div class="fb-orb"></div>
-                <div><div id="fbStage">—</div><div id="fbSub">—</div></div>
-                <div class="fb-res"><div class="l" id="fbResLbl">—</div><div class="v fb-mono" id="fbResVal">—</div></div>
-                <div id="fbBot"><span id="fbDot"></span><div><div class="fb-bs" id="fbState">—</div><div class="fb-bm fb-mono" id="fbMeta">—</div></div></div>
-                <span class="fb-hb" id="fbToggle">⏸</span>
-                <span class="fb-hb" id="fbMin">▁</span>
-            </div>
-            <div id="fbBody">
-                <div id="fbChips"></div>
-                <div class="fb-cols">
-                    <div class="fb-glass">
-                        <div class="fb-t">Structures</div>
-                        <div id="fbRows">${rows.join('')}</div>
-                        <div id="fbEffect" style="display:none"></div>
-                    </div>
-                    <div>
-                        <div class="fb-t">Resets</div>
-                        <div class="fb-rcard">
-                            <div class="fb-rh"><span class="fb-rt" id="fbR0t">Reset</span><span class="fb-tag" id="fbR0tag"></span></div>
-                            <div class="fb-rd" id="fbR0d"></div>
-                            <div class="fb-rs"><span id="fbR0s" class="fb-mono"></span></div>
-                        </div>
-                        <div class="fb-rcard">
-                            <div class="fb-rh"><span class="fb-rt">Stage reset</span><span class="fb-tag" id="fbR1tag"></span></div>
-                            <div class="fb-rd" id="fbR1d"></div>
-                            <div class="fb-bar" id="fbR1bar"><i id="fbR1barI" style="width:0%"></i></div>
-                            <div class="fb-rs"><span id="fbR1cur" class="fb-mono"></span><span id="fbR1req" class="fb-mono"></span></div>
-                            <div class="fb-reward" id="fbR1reward"></div>
-                        </div>
-                        <div class="fb-rcard" id="fbVap" style="margin-bottom:0">
-                            <div class="fb-rh"><span class="fb-rt">Vaporization ρ</span><span class="fb-tag wait fb-mono" id="fbVtag">—</span></div>
-                            <div id="fbSpark"></div>
-                        </div>
-                    </div>
-                </div>
-                <div id="fbNav">
-                    <span class="fb-nav" id="fbNavStage">Stage</span>
-                    <span class="fb-nav" id="fbNavUpg">Upgrade</span>
-                    <span class="fb-nav" id="fbNavSet">Settings</span>
-                    <span style="margin-left:auto;font-size:10px;color:#6b7280" class="fb-mono">Fundamental Bot</span>
-                </div>
-                <div id="fbLog"></div>
-            </div>`;
+        hud.id = 'fbBar';
+        hud.title = 'Click to start / pause the autoplayer';
+        hud.innerHTML = '<span class="d"></span><b>Fundamental Bot</b><span class="s" id="fbStat">\u2014</span><span class="act" id="fbAct">\u23f8</span>';
         document.body.appendChild(hud);
-
-        const ids = ['fbStage', 'fbSub', 'fbResLbl', 'fbResVal', 'fbBot', 'fbDot', 'fbState', 'fbMeta',
-            'fbToggle', 'fbChips', 'fbEffect', 'fbR0t', 'fbR0tag', 'fbR0d', 'fbR0s', 'fbR1tag', 'fbR1d',
-            'fbR1bar', 'fbR1barI', 'fbR1cur', 'fbR1req', 'fbR1reward', 'fbVap', 'fbVtag', 'fbSpark', 'fbLog'];
-        for (let i = 1; i <= 6; i++) ids.push('fbB' + i, 'fbB' + i + 'Icon', 'fbB' + i + 'Name', 'fbB' + i + 'Own', 'fbB' + i + 'Cur', 'fbB' + i + 'Prod', 'fbB' + i + 'Cost', 'fbB' + i + 'Tgl');
-        ids.forEach((id) => { el[id] = $(id); });
-
-        el.fbToggle.onclick = () => (running ? stop() : start());
-        $('fbMin').onclick = () => { hud.classList.toggle('min'); localStorage.setItem('fbHudMin', hud.classList.contains('min') ? '1' : '0'); };
-        if (localStorage.getItem('fbHudMin') === '1') hud.classList.add('min');
-        $('fbNavStage').onclick = () => clickIf('stageTab');
-        $('fbNavUpg').onclick = () => clickIf('upgradeTab');
-        $('fbNavSet').onclick = () => clickIf('settingsTab');
-
+        el.fbStat = $('fbStat');
+        el.fbAct = $('fbAct');
+        hud.onclick = () => (running ? stop() : start());
         updateHud();
     }
 
-    let lastLogLen = -1;
-    const lastIcon = {};
     function updateHud() {
         if (!hud) return;
-        const s = activeStage();
-        const sw = $('stageWord');
-        hud.style.setProperty('--acc', sw ? getComputedStyle(sw).color : '#f4a93a');
-
-        // header
-        el.fbStage.textContent = sw ? sw.textContent.trim() : (STAGE_NAMES[s] || '—');
-        el.fbSub.textContent = `Stage ${ROMAN[s] || s} · ${RESET0_NAME[s] || ''}`;
-        const [l1, v1] = splitStat(statText('footerStat1'));
-        el.fbResLbl.textContent = l1 || 'Resource';
-        el.fbResVal.textContent = v1 || '—';
-        el.fbBot.className = running ? '' : 'off';
-        el.fbDot.className = running ? '' : 'off';
-        el.fbState.textContent = running ? 'Bot running' : 'Bot paused';
-        el.fbMeta.textContent = (running && startTs ? fmtDur((Date.now() - startTs) / 1000) : '—') + ' · ' + tickCount.toLocaleString() + ' ticks';
-        el.fbToggle.textContent = running ? '⏸' : '▶';
-
-        // chips: live footer resources (skip "Missing") + strange gain + stage time
-        const chips = [];
-        ['footerStat1', 'footerStat2', 'footerStat3'].forEach((id) => {
-            const [k, v] = splitStat(statText(id));
-            if (k && k !== 'Missing' && v) chips.push([k, v]);
-        });
-        const sg = textOf('strange0Gain'); if (sg) chips.push(['Strange ◆', '+' + sg + '/reset']);
-        const stime = textOf('stageTime'); if (stime) chips.push(['Stage time', stime.replace(/stage time:?/i, '').trim() || stime]);
-        el.fbChips.innerHTML = chips.slice(0, 5).map(([k, v]) =>
-            `<div class="fb-chip"><div class="k">${esc(k)}</div><div class="v fb-mono">${esc(v)}</div></div>`).join('');
-
-        // structures
-        for (let i = 1; i <= 6; i++) {
-            const gameRow = $('building' + i);
-            const name = textOf('building' + i + 'Name');
-            if (!gameRow || gameRow.offsetParent === null || !name) { el['fbB' + i].style.display = 'none'; continue; }
-            el['fbB' + i].style.display = '';
-            const icon = gameRow.querySelector('img');
-            if (icon) { const src = icon.getAttribute('src'); if (lastIcon[i] !== src) { el['fbB' + i + 'Icon'].src = src; lastIcon[i] = src; } }
-            el['fbB' + i + 'Name'].textContent = name;
-            const own = textOf('building' + i + 'True');
-            el['fbB' + i + 'Own'].textContent = (own && own !== '[0]') ? own.replace(/[\[\]]/g, '×') : '';
-            el['fbB' + i + 'Cur'].textContent = textOf('building' + i + 'Cur') + ' held';
-            el['fbB' + i + 'Prod'].textContent = '▲ ' + textOf('building' + i + 'Prod') + '/s';
-            const buyX = textOf('building' + i + 'BuyX'), cost = textOf('building' + i + 'Btn');
-            el['fbB' + i].classList.toggle('lk', /lock/i.test(buyX) || /unlocked with/i.test(cost));
-            el['fbB' + i + 'Cost'].innerHTML = esc(cost).replace(/^(Need:?\s*)/i, 'Need<br>').replace(/(Unlocked with\s*)/i, 'Unlock via<br>');
-            el['fbB' + i + 'Tgl'].className = 'fb-tgl' + (/\bON\b/.test(textOf('toggleBuilding' + i).toUpperCase()) ? '' : ' off');
-        }
-
-        // stage effect note
-        const eff = textOf('stageInfo');
-        el.fbEffect.style.display = eff ? '' : 'none';
-        if (eff) el.fbEffect.textContent = trimDesc(eff);
-
-        // reset0 card (discharge/vaporize/rank/collapse/merge/nucleation)
-        const r0btn = textOf('reset0Button');
-        el.fbR0t.textContent = RESET0_NAME[s] || 'Reset';
-        el.fbR0d.textContent = trimDesc(textOf('reset0Main'));
-        el.fbR0s.textContent = r0btn || '—';
-        const r0done = /max|achieved/i.test(r0btn);
-        el.fbR0tag.textContent = r0done ? 'Max' : (resetReady('reset0Button') ? 'Ready' : 'Waiting');
-        el.fbR0tag.className = 'fb-tag ' + (r0done || resetReady('reset0Button') ? 'done' : 'wait');
-
-        // reset1 card (stage reset) with progress bar
-        const r1btn = textOf('reset1Button');
-        el.fbR1d.textContent = trimDesc(textOf('reset1Main'));
-        const r1ready = resetReady('reset1Button');
-        el.fbR1tag.textContent = r1ready ? 'Ready' : 'Waiting';
-        el.fbR1tag.className = 'fb-tag ' + (r1ready ? 'done' : 'wait');
-        const m = r1btn.match(/([\d.eE+]+)\s*([A-Za-z]+)/);
-        let curVal = null, unit = m ? m[2] : null;
-        if (unit) ['footerStat1', 'footerStat2', 'footerStat3'].forEach((id) => {
-            const [k, v] = splitStat(statText(id));
-            if (k && k.toLowerCase() === unit.toLowerCase()) curVal = numFromText(v);
-        });
-        if (m && curVal != null && parseFloat(m[1]) > 0) {
-            el.fbR1bar.style.display = '';
-            el.fbR1barI.style.width = (Math.max(0, Math.min(1, curVal / parseFloat(m[1]))) * 100).toFixed(1) + '%';
-            el.fbR1cur.textContent = fmtNum(curVal) + ' ' + unit;
-            el.fbR1req.innerHTML = 'need <b>' + esc(m[1]) + '</b>';
-        } else {
-            el.fbR1bar.style.display = 'none';
-            el.fbR1cur.textContent = r1btn;
-            el.fbR1req.textContent = '';
-        }
-        const rew = textOf('reset1Main').match(/gain ([\d.eE+]+) Strange quark/i);
-        el.fbR1reward.textContent = rew ? ('◆ +' + rew[1] + ' Strange quark' + (rew[1] === '1.00000' ? '' : 's')) : '';
-
-        // vaporization card (meaningful on stage 2)
-        const onS2 = s === 2;
-        el.fbVap.style.opacity = onS2 ? '1' : '.45';
-        if (onS2) {
-            const boost = readNum('#vaporizationBoostTotal > span');
-            const elapsed = vapLastTs ? (Date.now() - vapLastTs) / 1000 : 0;
-            const rho = boost && boost > 1 && elapsed > 0 ? Math.log(boost) / elapsed : 0;
-            el.fbVtag.textContent = (boost != null ? boost.toFixed(2) + '×' : '—') + ' · ρ ' + rho.toFixed(4);
-        } else {
-            el.fbVtag.textContent = cycleLog.length ? ('μρ ' + (cycleLog.reduce((a, r) => a + r.rho, 0) / cycleLog.length).toFixed(4)) : 'idle';
-        }
-        const recent = cycleLog.slice(-30);
-        if (recent.length) {
-            const mx = Math.max(...recent.map((r) => r.rho)) || 1;
-            el.fbSpark.innerHTML = recent.map((r) => `<i style="height:${Math.max(2, Math.round(r.rho / mx * 28))}px"></i>`).join('');
-        }
-
-        // event log (re-render on change)
-        if (eventLog.length !== lastLogLen) {
-            lastLogLen = eventLog.length;
-            el.fbLog.innerHTML = eventLog.slice(-8).reverse().map((e) => {
-                const d = new Date(e.t);
-                const ts = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
-                return `<div><time>${ts}</time>${esc(e.msg)}</div>`;
-            }).join('');
-        }
+        hud.className = running ? '' : 'off';
+        el.fbAct.textContent = running ? '\u23f8' : '\u25b6';
+        const stage = textOf('stageWord');
+        el.fbStat.textContent = running
+            ? `\u00b7 running${stage ? ' \u00b7 ' + stage : ''}${startTs ? ' \u00b7 ' + fmtDur((Date.now() - startTs) / 1000) : ''}`
+            : '\u00b7 paused \u2014 click to start';
     }
 
     // ---- Boot -----------------------------------------------------------------
