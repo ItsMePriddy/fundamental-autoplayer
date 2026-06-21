@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.5.0
+// @version      1.5.1
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -375,15 +375,13 @@
     const el = {}; // cached field elements
 
     const HUD_CSS = `
-    #fbHud{position:fixed;z-index:2147483600;width:740px;max-width:96vw;font-family:'Inter',system-ui,sans-serif;
-        color:#e8edf6;--acc:#f4a93a;border-radius:18px;overflow:hidden;user-select:none;
-        background:linear-gradient(165deg,rgba(20,18,34,.93),rgba(10,11,20,.96));
-        border:1px solid color-mix(in srgb,var(--acc) 30%,rgba(255,255,255,.08));backdrop-filter:blur(14px);
-        box-shadow:0 18px 60px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.05),0 0 34px color-mix(in srgb,var(--acc) 13%,transparent);}
+    #fbHud{position:fixed;inset:0;z-index:2147483600;display:flex;flex-direction:column;font-family:'Inter',system-ui,sans-serif;
+        color:#e8edf6;--acc:#f4a93a;overflow:hidden;user-select:none;
+        background:radial-gradient(1500px 860px at 72% -12%,color-mix(in srgb,var(--acc) 11%,#0d0b16) 0%,#0a0b13 56%,#06060c 100%);}
+    #fbHud.min{bottom:auto;}
     #fbHud .fb-mono{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-variant-numeric:tabular-nums;}
-    #fbHead{display:flex;align-items:center;gap:13px;padding:12px 16px;cursor:grab;
-        background:linear-gradient(90deg,color-mix(in srgb,var(--acc) 22%,transparent),transparent 72%);border-bottom:1px solid rgba(255,255,255,.07);}
-    #fbHead:active{cursor:grabbing;}
+    #fbHead{display:flex;align-items:center;gap:14px;padding:14px 26px;flex:0 0 auto;
+        background:linear-gradient(90deg,color-mix(in srgb,var(--acc) 22%,transparent),transparent 60%);border-bottom:1px solid rgba(255,255,255,.08);}
     .fb-orb{width:38px;height:38px;border-radius:50%;flex:0 0 auto;background:radial-gradient(circle at 32% 30%,#ffffffaa,var(--acc) 50%,#000a 96%);
         box-shadow:0 0 18px color-mix(in srgb,var(--acc) 55%,transparent),inset -5px -5px 10px rgba(0,0,0,.4);}
     #fbStage{font-size:19px;font-weight:700;color:#fff;line-height:1.1;}
@@ -400,17 +398,19 @@
     .fb-bm{font-size:9px;color:#9aa3b8;}
     .fb-hb{cursor:pointer;color:#aab4c8;width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);font-size:12px;}
     .fb-hb:hover{color:#fff;background:rgba(255,255,255,.12);}
-    #fbBody{padding:13px 16px 15px;display:flex;flex-direction:column;gap:12px;}
+    #fbBody{flex:1 1 auto;overflow:auto;padding:18px 26px 22px;display:flex;flex-direction:column;gap:16px;}
     #fbHud.min #fbBody{display:none;}
     #fbChips{display:flex;gap:9px;flex-wrap:wrap;}
     .fb-chip{flex:1;min-width:92px;padding:8px 11px;border-radius:11px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);}
     .fb-chip .k{font-size:9px;letter-spacing:1px;text-transform:uppercase;color:#828ba0;white-space:nowrap;}
     .fb-chip .v{font-size:15px;font-weight:600;color:#fff;margin-top:2px;white-space:nowrap;}
-    .fb-cols{display:grid;grid-template-columns:1.5fr 1fr;gap:14px;}
+    .fb-cols{display:grid;grid-template-columns:1fr 400px;gap:20px;align-items:start;flex:1 1 auto;}
+    @media(max-width:880px){#fbHud .fb-cols{grid-template-columns:1fr;}}
+    #fbRows{display:grid;grid-template-columns:repeat(auto-fit,minmax(248px,1fr));gap:9px;}
     .fb-t{font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#8a93a8;margin-bottom:9px;display:flex;align-items:center;gap:8px;}
     .fb-t::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,rgba(255,255,255,.12),transparent);}
     .fb-glass{background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:13px 15px;}
-    .fb-brow{display:grid;grid-template-columns:34px 1fr auto 40px;gap:11px;align-items:center;padding:8px 10px;border-radius:11px;margin-bottom:7px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.05);}
+    .fb-brow{display:grid;grid-template-columns:34px 1fr auto 40px;gap:11px;align-items:center;padding:9px 11px;border-radius:11px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.05);}
     .fb-brow.lk{opacity:.4;}
     .fb-bi{width:34px;height:34px;image-rendering:pixelated;border-radius:7px;object-fit:contain;}
     .fb-bn{font-size:14px;font-weight:600;color:#fff;display:flex;align-items:center;gap:7px;}
@@ -487,7 +487,7 @@
                 <div class="fb-cols">
                     <div class="fb-glass">
                         <div class="fb-t">Structures</div>
-                        ${rows.join('')}
+                        <div id="fbRows">${rows.join('')}</div>
                         <div id="fbEffect" style="display:none"></div>
                     </div>
                     <div>
@@ -533,33 +533,7 @@
         $('fbNavUpg').onclick = () => clickIf('upgradeTab');
         $('fbNavSet').onclick = () => clickIf('settingsTab');
 
-        const pos = localStorage.getItem('fbHudPos');
-        if (pos) { try { const p = JSON.parse(pos); hud.style.left = p.x + 'px'; hud.style.top = p.y + 'px'; } catch (e) { /* ignore */ } }
-        else { hud.style.left = 'max(8px, calc(50vw - 370px))'; hud.style.top = '12px'; }
-        makeDraggable($('fbHead'));
         updateHud();
-    }
-
-    function makeDraggable(handle) {
-        let sx, sy, ox, oy, dragging = false;
-        handle.addEventListener('mousedown', (e) => {
-            if (e.target.classList.contains('fb-hb')) return;
-            dragging = true;
-            const r = hud.getBoundingClientRect();
-            ox = r.left; oy = r.top; sx = e.clientX; sy = e.clientY;
-            e.preventDefault();
-        });
-        window.addEventListener('mousemove', (e) => {
-            if (!dragging) return;
-            hud.style.left = Math.max(0, Math.min(window.innerWidth - 80, ox + e.clientX - sx)) + 'px';
-            hud.style.top = Math.max(0, Math.min(window.innerHeight - 24, oy + e.clientY - sy)) + 'px';
-        });
-        window.addEventListener('mouseup', () => {
-            if (!dragging) return;
-            dragging = false;
-            const r = hud.getBoundingClientRect();
-            localStorage.setItem('fbHudPos', JSON.stringify({ x: Math.round(r.left), y: Math.round(r.top) }));
-        });
     }
 
     let lastLogLen = -1;
