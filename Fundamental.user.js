@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.6.0
+// @version      1.6.1
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -82,9 +82,11 @@
         highStageResets: false, // stages 5-6 (merge/nucleation) are major prestige resets with
                                 // their own optimal-timing logic. Leave false to let the GAME's
                                 // auto-resets handle them. (Stage 4 collapse has dedicated logic.)
-        collapseBoost: 4,       // stage 4: collapse when the production boost (#collapseBoostTotal)
-                                // reaches this multiple. Higher than vaporization's 2.25 — each
-                                // collapse resets more, and later collapses unlock elements/upgrades.
+        collapseBoost: 2.5,     // stage 4: collapse immediately when the production boost
+                                // (#collapseBoostTotal) reaches this multiple — a clearly-good
+                                // collapse is always worth taking now rather than waiting out the
+                                // anti-hang timer. Early stage-4 boosts hover low (~1-1.3), so most
+                                // collapses come from the anti-hang below until mass/stars scale up.
         collapseMaxWaitMs: 90000, // anti-hang: also collapse after this long at a modest boost, so
                                 // collapse-gated elements and mass-locked upgrades keep unlocking
                                 // (a pure boost gate can stall when a collapse is what's needed).
