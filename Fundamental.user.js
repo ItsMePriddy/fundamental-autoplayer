@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.8.1
+// @version      1.8.2
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -94,7 +94,11 @@
         autoExport: true,       // stage 5+: periodically click #export to claim Strange-quark
                                 // rewards. The save-file download it triggers is suppressed
                                 // (no files saved) — only the in-game reward is kept.
-        exportEveryMs: 43200000, // 12h — matches the reward conversion cap (full value per export).
+        exportEveryMs: 10000,   // 10s. The reward scales with elapsed time (conversion =
+                                // min(time/12h, 1)), so total quarks/hour is the SAME at any
+                                // cadence below 12h — exporting often just claims them in small
+                                // continuous amounts that get reinvested into strangeness right
+                                // away instead of sitting idle. (12h only maxes a SINGLE export.)
         smartStrangeness: true, // route the shared strange-quark pool to the CURRENT stage first,
                                 // then highest->lowest, instead of the game's stage-1-first dump.
         verbose: false,         // log every action to console
