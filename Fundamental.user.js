@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.8.0
+// @version      1.8.1
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -224,7 +224,14 @@
     // stage you're actually progressing. Route them by priority instead: current stage first,
     // then highest->lowest (lower stages still get the leftovers). Each click buys max of that
     // upgrade; missing/maxed/locked/unaffordable buttons are harmless no-ops.
+    // Per-upgrade ROI: the ONE globally-compounding strangeness is the quark-gain multiplier
+    // (stage 5 index 2 -> strange3Stage5: "Gain 1.4x more Strange quarks from any Stage reset"),
+    // which multiplies ALL future quark income — buy it before anything else. strange4Stage5
+    // (Intergalactic collapse-immunity + enables Upgrade automatization there) is the next key
+    // unlock. Everything else is local/automation and is well-served by current-stage-first below.
+    const STRANGE_PRIORITY = ['strange3Stage5', 'strange4Stage5'];
     function buyStrangenessSmart() {
+        for (const id of STRANGE_PRIORITY) clickIf(id); // highest-ROI first (no-op if maxed/locked)
         const cur = activeStage();
         const order = [cur];
         for (let s = 6; s >= 1; s--) if (s !== cur) order.push(s);
