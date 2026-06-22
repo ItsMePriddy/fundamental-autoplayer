@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.6.1
+// @version      1.7.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -91,6 +91,10 @@
                                 // collapse-gated elements and mass-locked upgrades keep unlocking
                                 // (a pure boost gate can stall when a collapse is what's needed).
         collapseMinBoost: 1.3,  // floor for the anti-hang collapse — don't fire a worthless reset.
+        autoExport: true,       // stage 5+: periodically click #export to claim Strange-quark
+                                // rewards. The save-file download it triggers is suppressed
+                                // (no files saved) — only the in-game reward is kept.
+        exportEveryMs: 43200000, // 12h — matches the reward conversion cap (full value per export).
         verbose: false,         // log every action to console
     };
 
@@ -361,7 +365,18 @@
     // ---- Main loop ------------------------------------------------------------
     let mainTimer = null;
     let lastSlow = 0;
+    let lastExport = 0;
     let running = false;
+
+    // The in-game Export grants Strange-quark rewards (exportReward) and THEN downloads the
+    // save via a data: anchor. Suppress only that download — we keep the reward, save no files.
+    function suppressExportDownloads() {
+        const origClick = HTMLAnchorElement.prototype.click;
+        HTMLAnchorElement.prototype.click = function () {
+            if (this.download && /^data:text\/plain/i.test(this.getAttribute('href') || '')) return;
+            return origClick.apply(this, arguments);
+        };
+    }
 
     function tick() {
         try {
@@ -374,6 +389,11 @@
             if (now - lastSlow >= CONFIG.slowResetEveryMs) {
                 lastSlow = now;
                 slowResets();
+            }
+            if (CONFIG.autoExport && activeStage() >= 5 && now - lastExport >= CONFIG.exportEveryMs) {
+                lastExport = now;
+                clickIf('export'); // claims Strange-quark reward; file download suppressed
+                pushLog('📤 export · claimed strange quarks');
             }
             updateHud();
         } catch (e) {
@@ -453,6 +473,7 @@
     // ---- Boot -----------------------------------------------------------------
     function boot() {
         if (!exists('makeAllFooter')) { setTimeout(boot, 500); return; } // wait for game UI
+        suppressExportDownloads();
         buildHud();
         // expose manual controls for the console
         window.FundamentalBot = { start, stop, tick, CONFIG, report, cycles: cycleLog, log: eventLog };
