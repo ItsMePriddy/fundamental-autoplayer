@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.7.0
+// @version      1.8.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -95,6 +95,8 @@
                                 // rewards. The save-file download it triggers is suppressed
                                 // (no files saved) — only the in-game reward is kept.
         exportEveryMs: 43200000, // 12h — matches the reward conversion cap (full value per export).
+        smartStrangeness: true, // route the shared strange-quark pool to the CURRENT stage first,
+                                // then highest->lowest, instead of the game's stage-1-first dump.
         verbose: false,         // log every action to console
     };
 
@@ -213,7 +215,20 @@
     function buyEverything() {
         clickIf('makeAllFooter');       // all structures (active stage)
         clickIf('createAllFooter');     // all upgrades + researches
-        clickIf('createAllStrangeness');// all strangeness (active stage)
+        if (CONFIG.smartStrangeness) buyStrangenessSmart();
+        else clickIf('createAllStrangeness');
+    }
+
+    // Strange quarks are a SHARED pool, but the game's "create all strangeness" buys stages
+    // 1->6 ASCENDING — draining quarks into low-stage upgrades you're long past before the
+    // stage you're actually progressing. Route them by priority instead: current stage first,
+    // then highest->lowest (lower stages still get the leftovers). Each click buys max of that
+    // upgrade; missing/maxed/locked/unaffordable buttons are harmless no-ops.
+    function buyStrangenessSmart() {
+        const cur = activeStage();
+        const order = [cur];
+        for (let s = 6; s >= 1; s--) if (s !== cur) order.push(s);
+        for (const s of order) for (let i = 1; i <= 10; i++) clickIf('strange' + i + 'Stage' + s);
     }
 
     // ---- Vaporization timing (stage 2) ---------------------------------------
