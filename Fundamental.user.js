@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.9.0
+// @version      1.9.1
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -106,6 +106,12 @@
                                 // away instead of sitting idle. (12h only maxes a SINGLE export.)
         smartStrangeness: true, // route the shared strange-quark pool to the CURRENT stage first,
                                 // then highest->lowest, instead of the game's stage-1-first dump.
+        strangenessTarget: 'strange7Stage4', // buy this strangeness NEXT (hold others, save quarks
+                                // for it). Default = Interstellar "Elements no longer require
+                                // Collapse" (high ROI: instant element activation, no more forced
+                                // element-collapses). Set to null to disable targeted saving.
+        strangenessTargetTimeoutMs: 600000, // stop holding after 10 min if it can't be bought
+                                // (locked/too expensive) so the rest of strangeness isn't stalled.
         verbose: false,         // log every action to console
     };
 
@@ -238,9 +244,25 @@
     // which multiplies ALL future quark income — buy it before anything else. strange4Stage5
     // (Intergalactic collapse-immunity + enables Upgrade automatization there) is the next key
     // unlock. Everything else is local/automation and is well-served by current-stage-first below.
-    const STRANGE_PRIORITY = ['strange3Stage5', 'strange4Stage5'];
+    // strangenessTarget: a single upgrade to buy NEXT — the bot HOLDS other strangeness so quarks
+    // accumulate for it. Default strange7Stage4 = Interstellar "Elements no longer require Collapse"
+    // (index 6, max 1): elements then activate instantly via createAll, ending forced element-
+    // collapses. Resumes normal buying once it's owned, or after strangenessTargetTimeoutMs (so a
+    // locked/too-pricey target can't stall forever). The quark-gain multiplier is always pursued.
+    let strangeTargetStart = 0;
+    function strangeUnowned(id) {
+        const m = textOf(id).match(/(\d[\d.eE+]*)\s*\/\s*(\d[\d.eE+]*)/);
+        return m ? parseFloat(m[1]) < parseFloat(m[2]) : false; // unparseable/maxed -> treat as owned
+    }
     function buyStrangenessSmart() {
-        for (const id of STRANGE_PRIORITY) clickIf(id); // highest-ROI first (no-op if maxed/locked)
+        clickIf('strange3Stage5'); // highest-ROI quark-gain multiplier — always pursue (compounds income)
+        const target = CONFIG.strangenessTarget;
+        if (target && $(target) && strangeUnowned(target)) {
+            if (!strangeTargetStart) strangeTargetStart = Date.now();
+            clickIf(target); // buy it the instant quarks allow
+            if (Date.now() - strangeTargetStart <= CONFIG.strangenessTargetTimeoutMs) return; // hold the rest
+        } else { strangeTargetStart = 0; }
+        clickIf('strange4Stage5'); // Intergalactic collapse-immunity / enables auto-upgrade there
         const cur = activeStage();
         const order = [cur];
         for (let s = 6; s >= 1; s--) if (s !== cur) order.push(s);
