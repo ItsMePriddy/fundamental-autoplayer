@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.8.2
+// @version      1.9.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -91,6 +91,11 @@
                                 // collapse-gated elements and mass-locked upgrades keep unlocking
                                 // (a pure boost gate can stall when a collapse is what's needed).
         collapseMinBoost: 1.3,  // floor for the anti-hang collapse — don't fire a worthless reset.
+        collapseOnElement: true, // collapse ASAP when a new element is pending (awaiting activation)
+                                // — elements only activate on collapse and their boost isn't in
+                                // #collapseBoostTotal, so grabbing them fast is high-ROI.
+        collapseElementGapMs: 3000, // min gap between element-triggered collapses (avoids a double
+                                // fire during the render lag before the element flips to "created").
         autoExport: true,       // stage 5+: periodically click #export to claim Strange-quark
                                 // rewards. The save-file download it triggers is suppressed
                                 // (no files saved) — only the in-game reward is kept.
@@ -336,13 +341,19 @@
         if (!/collapse/i.test(textOf('reset0Button'))) return; // not the collapse reset / not actionable
         const boost = readNum('#collapseBoostTotal > span'); // null when the game auto-handles it
         const elapsed = (Date.now() - collapseLastTs) / 1000;
+        // A pending element (#elementN has class "awaiting") only activates ON a collapse, and its
+        // permanent boost is NOT included in #collapseBoostTotal (elements apply during the reset),
+        // so the boost reading understates the true value. Collapse promptly to bank it. Self-
+        // disabling: with the "elements don't need collapse" strangeness, elements skip "awaiting".
+        const elementPending = CONFIG.collapseOnElement && !!document.querySelector('[id^="element"].awaiting');
         let fire = false;
-        if (boost != null && boost >= CONFIG.collapseBoost) fire = true;
+        if (elementPending && elapsed >= CONFIG.collapseElementGapMs / 1000) fire = true;
+        else if (boost != null && boost >= CONFIG.collapseBoost) fire = true;
         else if (elapsed >= CONFIG.collapseMaxWaitMs / 1000 && (boost == null || boost >= CONFIG.collapseMinBoost)) fire = true;
         if (fire) {
             clickIf('reset0Button');
             collapseLastTs = Date.now();
-            pushLog('💥 collapse' + (boost != null ? ' ' + boost.toFixed(2) + '×' : ''));
+            pushLog('💥 collapse' + (elementPending ? ' (element)' : '') + (boost != null ? ' ' + boost.toFixed(2) + '×' : ''));
         }
     }
 
