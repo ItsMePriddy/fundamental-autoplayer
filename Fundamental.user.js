@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.9.1
+// @version      1.10.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -427,14 +427,24 @@
     let lastExport = 0;
     let running = false;
 
-    // The in-game Export grants Strange-quark rewards (exportReward) and THEN downloads the
-    // save via a data: anchor. Suppress only that download — we keep the reward, save no files.
+    // The in-game Export grants Strange-quark rewards (exportReward) and THEN downloads the save
+    // via a data: anchor. Suppress that download ONLY for the bot's auto-exports (flag-gated), so a
+    // manual "Export save" still produces a real backup file.
+    let suppressNextDownload = false;
     function suppressExportDownloads() {
         const origClick = HTMLAnchorElement.prototype.click;
         HTMLAnchorElement.prototype.click = function () {
-            if (this.download && /^data:text\/plain/i.test(this.getAttribute('href') || '')) return;
+            if (suppressNextDownload && this.download && /^data:text\/plain/i.test(this.getAttribute('href') || '')) {
+                suppressNextDownload = false;
+                return;
+            }
             return origClick.apply(this, arguments);
         };
+    }
+    // Manual save export — clicks the game's Export with the download allowed (real file).
+    function exportSaveFile() {
+        suppressNextDownload = false;
+        if (clickIf('export')) pushLog('💾 manual save export');
     }
 
     function tick() {
@@ -451,7 +461,8 @@
             }
             if (CONFIG.autoExport && activeStage() >= 5 && now - lastExport >= CONFIG.exportEveryMs) {
                 lastExport = now;
-                clickIf('export'); // claims Strange-quark reward; file download suppressed
+                suppressNextDownload = true; // suppress only the auto-export's file download (keep reward)
+                clickIf('export');
                 pushLog('📤 export · claimed strange quarks');
             }
             updateHud();
@@ -484,49 +495,126 @@
         log('stopped');
     }
 
-    // ---- HUD ------------------------------------------------------------------
+    // ---- HUD (side panel) -----------------------------------------------------
     let hud = null;
     const el = {}; // cached field elements
 
     const HUD_CSS = `
-    #fbBar{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:2147483600;
-        display:flex;align-items:center;gap:11px;padding:9px 18px;border-radius:999px;cursor:pointer;
-        font-family:'Inter',system-ui,sans-serif;font-size:13px;color:#e8edf6;user-select:none;
-        background:linear-gradient(165deg,rgba(20,18,34,.92),rgba(10,11,20,.95));
-        border:1px solid rgba(120,170,255,.25);backdrop-filter:blur(10px);box-shadow:0 6px 22px rgba(0,0,0,.45);}
-    #fbBar:hover{border-color:rgba(120,170,255,.55);}
-    #fbBar.off{border-color:rgba(248,113,113,.4);}
-    #fbBar .d{width:9px;height:9px;border-radius:50%;background:#4ade80;box-shadow:0 0 9px #4ade80;animation:fbP 1.5s ease-in-out infinite;flex:0 0 auto;}
-    #fbBar.off .d{background:#f87171;box-shadow:0 0 9px #f87171;animation:none;}
+    #fbHud{position:fixed;top:12px;right:12px;z-index:2147483600;width:238px;font-family:'Inter',system-ui,sans-serif;
+        font-size:12px;color:#e8edf6;user-select:none;border-radius:14px;overflow:hidden;
+        background:linear-gradient(165deg,rgba(20,18,34,.93),rgba(10,11,20,.96));
+        border:1px solid rgba(120,170,255,.28);backdrop-filter:blur(12px);box-shadow:0 10px 30px rgba(0,0,0,.5);}
+    #fbHud.min #fbBody{display:none;}
+    #fbHead{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:grab;
+        background:linear-gradient(90deg,rgba(120,150,255,.18),transparent 70%);border-bottom:1px solid rgba(255,255,255,.07);}
+    #fbHead:active{cursor:grabbing;}
+    #fbHud .d{width:9px;height:9px;border-radius:50%;background:#4ade80;box-shadow:0 0 9px #4ade80;flex:0 0 auto;animation:fbP 1.5s ease-in-out infinite;}
+    #fbHud.off .d{background:#f87171;box-shadow:0 0 9px #f87171;animation:none;}
     @keyframes fbP{0%,100%{opacity:1;}50%{opacity:.35;}}
-    #fbBar b{font-weight:700;letter-spacing:.2px;}
-    #fbBar .s{color:#9fb6d6;font-variant-numeric:tabular-nums;}
-    #fbBar .act{font-size:14px;width:18px;text-align:center;color:#cfe0ff;}
+    #fbHead b{font-weight:700;flex:1;letter-spacing:.2px;font-size:12.5px;color:#eaf2ff;}
+    #fbMin{cursor:pointer;color:#9fb6d6;padding:0 6px;border-radius:6px;}
+    #fbMin:hover{color:#fff;background:rgba(255,255,255,.1);}
+    #fbBody{padding:10px 12px 12px;display:flex;flex-direction:column;gap:8px;}
+    .fb-t{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:#7fa8d8;opacity:.85;margin-bottom:1px;}
+    .fb-r{display:flex;justify-content:space-between;gap:8px;align-items:baseline;}
+    .fb-k{color:#9fb6d6;flex:0 0 auto;}
+    .fb-v{color:#fff;font-weight:600;text-align:right;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums;}
+    .fb-sep{height:1px;background:rgba(255,255,255,.08);margin:2px 0;}
+    .fb-tg{display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:3px 0;}
+    .fb-tg:hover .fb-k{color:#cfe0ff;}
+    .fb-pill{font-size:9.5px;font-weight:700;letter-spacing:.5px;padding:2px 10px;border-radius:20px;}
+    .fb-pill.on{background:rgba(74,222,128,.16);color:#7fdca0;border:1px solid rgba(74,222,128,.35);}
+    .fb-pill.off{background:rgba(248,113,113,.12);color:#f0a0a0;border:1px solid rgba(248,113,113,.3);}
+    .fb-btn{margin-top:4px;text-align:center;cursor:pointer;padding:7px;border-radius:9px;font-size:11.5px;font-weight:600;
+        color:#cfe0ff;background:rgba(120,170,255,.1);border:1px solid rgba(120,170,255,.3);}
+    .fb-btn:hover{background:rgba(120,170,255,.22);color:#fff;}
     `;
+
+    const setPill = (elm, on) => { elm.textContent = on ? 'ON' : 'OFF'; elm.className = 'fb-pill ' + (on ? 'on' : 'off'); };
 
     function buildHud() {
         const style = document.createElement('style');
         style.textContent = HUD_CSS;
         document.head.appendChild(style);
         hud = document.createElement('div');
-        hud.id = 'fbBar';
-        hud.title = 'Click to start / pause the autoplayer';
-        hud.innerHTML = '<span class="d"></span><b>Fundamental Bot</b><span class="s" id="fbStat">\u2014</span><span class="act" id="fbAct">\u23f8</span>';
+        hud.id = 'fbHud';
+        hud.innerHTML = `
+            <div id="fbHead"><span class="d"></span><b>\u269b Fundamental Bot</b><span id="fbMin" title="Collapse / expand">\u25be</span></div>
+            <div id="fbBody">
+                <div class="fb-r"><span class="fb-k">State</span><span class="fb-v" id="fbState">\u2014</span></div>
+                <div class="fb-r"><span class="fb-k">Uptime</span><span class="fb-v" id="fbUp">\u2014</span></div>
+                <div class="fb-r"><span class="fb-k">Stage</span><span class="fb-v" id="fbStage">\u2014</span></div>
+                <div class="fb-r"><span class="fb-k" id="fbResK">Resource</span><span class="fb-v" id="fbResV">\u2014</span></div>
+                <div class="fb-r"><span class="fb-k" id="fbRoiK">ROI</span><span class="fb-v" id="fbRoiV">\u2014</span></div>
+                <div class="fb-r"><span class="fb-k">Goal</span><span class="fb-v" id="fbGoal">\u2014</span></div>
+                <div class="fb-r"><span class="fb-k">Strange tgt</span><span class="fb-v" id="fbTgt">\u2014</span></div>
+                <div class="fb-sep"></div>
+                <div class="fb-t">Toggles</div>
+                <div class="fb-tg" id="fbTgScript"><span class="fb-k">Script</span><span class="fb-pill" id="fbPScript">\u2014</span></div>
+                <div class="fb-tg" id="fbTgExport"><span class="fb-k">Auto-export</span><span class="fb-pill" id="fbPExport">\u2014</span></div>
+                <div class="fb-tg" id="fbTgStrange"><span class="fb-k">Smart strangeness</span><span class="fb-pill" id="fbPStrange">\u2014</span></div>
+                <div class="fb-tg" id="fbTgElem"><span class="fb-k">Collapse on element</span><span class="fb-pill" id="fbPElem">\u2014</span></div>
+                <div class="fb-btn" id="fbExportBtn">\ud83d\udcbe Export save</div>
+            </div>`;
         document.body.appendChild(hud);
-        el.fbStat = $('fbStat');
-        el.fbAct = $('fbAct');
-        hud.onclick = () => (running ? stop() : start());
+        ['fbState', 'fbUp', 'fbStage', 'fbResK', 'fbResV', 'fbRoiK', 'fbRoiV', 'fbGoal', 'fbTgt',
+         'fbPScript', 'fbPExport', 'fbPStrange', 'fbPElem'].forEach((id) => { el[id] = $(id); });
+        $('fbMin').onclick = (e) => { e.stopPropagation(); hud.classList.toggle('min'); localStorage.setItem('fbHudMin', hud.classList.contains('min') ? '1' : '0'); };
+        if (localStorage.getItem('fbHudMin') === '1') hud.classList.add('min');
+        $('fbTgScript').onclick = () => (running ? stop() : start());
+        $('fbTgExport').onclick = () => { CONFIG.autoExport = !CONFIG.autoExport; updateHud(); };
+        $('fbTgStrange').onclick = () => { CONFIG.smartStrangeness = !CONFIG.smartStrangeness; updateHud(); };
+        $('fbTgElem').onclick = () => { CONFIG.collapseOnElement = !CONFIG.collapseOnElement; updateHud(); };
+        $('fbExportBtn').onclick = exportSaveFile;
+        const pos = localStorage.getItem('fbHudPos');
+        if (pos) { try { const p = JSON.parse(pos); hud.style.left = p.x + 'px'; hud.style.top = p.y + 'px'; hud.style.right = 'auto'; } catch (e) { /* ignore */ } }
+        makeDraggable($('fbHead'));
         updateHud();
+    }
+
+    function makeDraggable(handle) {
+        let sx, sy, ox, oy, drag = false;
+        handle.addEventListener('mousedown', (e) => {
+            if (e.target.id === 'fbMin') return;
+            drag = true; const r = hud.getBoundingClientRect();
+            ox = r.left; oy = r.top; sx = e.clientX; sy = e.clientY; hud.style.right = 'auto'; e.preventDefault();
+        });
+        window.addEventListener('mousemove', (e) => {
+            if (!drag) return;
+            hud.style.left = Math.max(0, Math.min(window.innerWidth - 60, ox + e.clientX - sx)) + 'px';
+            hud.style.top = Math.max(0, Math.min(window.innerHeight - 24, oy + e.clientY - sy)) + 'px';
+        });
+        window.addEventListener('mouseup', () => {
+            if (!drag) return; drag = false;
+            const r = hud.getBoundingClientRect();
+            localStorage.setItem('fbHudPos', JSON.stringify({ x: Math.round(r.left), y: Math.round(r.top) }));
+        });
     }
 
     function updateHud() {
         if (!hud) return;
+        const s = activeStage();
+        const sw = $('stageWord');
         hud.className = running ? '' : 'off';
-        el.fbAct.textContent = running ? '\u23f8' : '\u25b6';
-        const stage = textOf('stageWord');
-        el.fbStat.textContent = running
-            ? `\u00b7 running${stage ? ' \u00b7 ' + stage : ''}${startTs ? ' \u00b7 ' + fmtDur((Date.now() - startTs) / 1000) : ''}`
-            : '\u00b7 paused \u2014 click to start';
+        el.fbState.textContent = running ? 'running' : 'paused';
+        el.fbState.style.color = running ? '#7fdca0' : '#f0a0a0';
+        el.fbUp.textContent = running && startTs ? fmtDur((Date.now() - startTs) / 1000) : '\u2014';
+        el.fbStage.textContent = sw ? sw.textContent.trim() : (STAGE_NAMES[s] || '\u2014');
+        if (sw) el.fbStage.style.color = getComputedStyle(sw).color;
+        const f1 = textOf('footerStat1'); const ci = f1.indexOf(':');
+        el.fbResK.textContent = ci >= 0 ? f1.slice(0, ci).trim() : 'Resource';
+        el.fbResV.textContent = ci >= 0 ? f1.slice(ci + 1).trim() : (f1 || '\u2014');
+        el.fbGoal.textContent = textOf('reset0Button') || '\u2014';
+        let roiK = 'ROI', roiV = '\u2014';
+        if (s === 2) { roiK = 'Vap boost'; const b = readNum('#vaporizationBoostTotal > span'); roiV = b != null ? b.toFixed(2) + '\u00d7' : '\u2014'; }
+        else if (s === 4) { roiK = 'Collapse boost'; const b = readNum('#collapseBoostTotal > span'); roiV = b != null ? b.toFixed(2) + '\u00d7' : '\u2014'; }
+        el.fbRoiK.textContent = roiK; el.fbRoiV.textContent = roiV;
+        const tgt = CONFIG.strangenessTarget;
+        el.fbTgt.textContent = tgt ? (($(tgt) && (textOf(tgt).match(/\d[\d.eE+]*\s*\/\s*\d[\d.eE+]*/) || ['\u2014'])[0]) || '\u2014') : 'off';
+        setPill(el.fbPScript, running);
+        setPill(el.fbPExport, CONFIG.autoExport);
+        setPill(el.fbPStrange, CONFIG.smartStrangeness);
+        setPill(el.fbPElem, CONFIG.collapseOnElement);
     }
 
     // ---- Boot -----------------------------------------------------------------
@@ -535,7 +623,7 @@
         suppressExportDownloads();
         buildHud();
         // expose manual controls for the console
-        window.FundamentalBot = { start, stop, tick, CONFIG, report, cycles: cycleLog, log: eventLog };
+        window.FundamentalBot = { start, stop, tick, CONFIG, report, cycles: cycleLog, log: eventLog, exportSave: exportSaveFile };
         if (CONFIG.autoStart) start();
         console.log('[Fundamental] Autoplayer loaded. Use the on-screen HUD or window.FundamentalBot.start()/.stop()/.report().');
     }
