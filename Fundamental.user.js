@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.10.0
+// @version      1.11.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -79,9 +79,20 @@
                                 // below its running max.
         logCycles: true,        // record each vaporization cycle for tuning/validation.
                                 // Inspect via window.FundamentalBot.report().
-        highStageResets: false, // stages 5-6 (merge/nucleation) are major prestige resets with
-                                // their own optimal-timing logic. Leave false to let the GAME's
-                                // auto-resets handle them. (Stage 4 collapse has dedicated logic.)
+        highStageResets: false, // stage 6 (nucleation) is a major prestige reset. Leave false to
+                                // let the GAME's auto-resets handle it. (Stages 4/5 — collapse and
+                                // merge — have their own dedicated boost-gated logic below.)
+        mergeBoost: 2,          // stage 5 (Intergalactic): merge when #mergeBoostTotal reaches this
+                                // multiple. The boost is the multiplicative gain of merging now
+                                // ((galaxies/(merged+1)+1)·rewardRatio). The game HARD-CAPS merges
+                                // (mergeMaxResets ≈ 2 early) and requires ≥22 galaxies — both
+                                // enforced on reset0Button (resetReady() gates them) — so a boost
+                                // gate can't over-merge; it just times the few merges available.
+                                // Self-disables once strangeness[5][9]≥2: the game then auto-merges
+                                // and hides #mergeBoostTotal, so the bot defers to it.
+        mergeMaxWaitMs: 120000, // anti-hang: also merge after this long once actionable, in case
+                                // the boost reads modest but galaxies are capped on available mass.
+        mergeMinBoost: 1.2,     // floor for the anti-hang merge — don't fire a worthless one.
         collapseBoost: 2.5,     // stage 4: collapse immediately when the production boost
                                 // (#collapseBoostTotal) reaches this multiple — a clearly-good
                                 // collapse is always worth taking now rather than waiting out the
@@ -379,6 +390,29 @@
         }
     }
 
+    // ---- Merge timing (stage 5) ----------------------------------------------
+    // Merge mirrors collapse's boost-gate but with two game-enforced guards that make it
+    // safe to spam-gate: merging needs ≥22 galaxies AND is hard-capped (mergeMaxResets ≈ 2
+    // early). Both are enforced on reset0Button — when unmet it reads "Requires…", so
+    // resetReady() returns false and we don't fire. #mergeBoostTotal is the multiplicative
+    // gain of merging now; it's hidden (→ null) once strangeness[5][9]≥2 hands merging to the
+    // game's own auto-merge, at which point we stop and defer to the game (matching collapse).
+    let mergeLastTs = 0;
+    function mergeStep() {
+        if (!mergeLastTs) mergeLastTs = Date.now();
+        if (!resetReady('reset0Button') || !/merge/i.test(textOf('reset0Button'))) return;
+        const boost = readNum('#mergeBoostTotal > span');
+        if (boost == null) return; // game auto-merges (strangeness[5][9]≥2) — leave timing to it
+        const elapsed = (Date.now() - mergeLastTs) / 1000;
+        const fire = boost >= CONFIG.mergeBoost ||
+            (elapsed >= CONFIG.mergeMaxWaitMs / 1000 && boost >= CONFIG.mergeMinBoost);
+        if (fire) {
+            clickIf('reset0Button');
+            mergeLastTs = Date.now();
+            pushLog('🌀 merge ' + boost.toFixed(2) + '×');
+        }
+    }
+
     // ---- Reset pass -----------------------------------------------------------
     // reset0 = discharge(1) / vaporization(2) / rank(3) / collapse(4) / merge(5) / nucleation(6).
     // Each stage's reset has a very different cost/benefit, so they are handled
@@ -388,6 +422,7 @@
         const s = activeStage();
         if (s !== 2 && prevStage === 2) resetVaporTracking(); // left stage 2 — start fresh on return
         if (s !== 4 && prevStage === 4) collapseLastTs = 0;   // left stage 4 — reset collapse cadence
+        if (s !== 5 && prevStage === 5) mergeLastTs = 0;      // left stage 5 — reset merge cadence
         if (s !== prevStage && prevStage !== 0) pushLog(`🪐 stage → ${STAGE_NAMES[s] || s}`);
         prevStage = s;
 
@@ -404,9 +439,11 @@
             clickIf('reset0Button');
         } else if (s === 4) {
             collapseStep();
+        } else if (s === 5) {
+            mergeStep();
         } else if (CONFIG.highStageResets && resetReady('reset0Button')) {
-            // Merge / nucleation: big prestige resets. Off by default — prefer the
-            // game's own auto-resets, which time these optimally.
+            // Nucleation (stage 6): big prestige reset. Off by default — prefer the
+            // game's own auto-resets, which time it optimally.
             clickIf('reset0Button');
             log('high-stage reset', s);
         }
