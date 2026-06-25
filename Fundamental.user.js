@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.11.2
+// @version      1.11.3
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -54,7 +54,7 @@
 (function () {
     'use strict';
 
-    const BOT_VERSION = '1.11.2';
+    const BOT_VERSION = '1.11.3';
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
@@ -120,12 +120,16 @@
                                 // away instead of sitting idle. (12h only maxes a SINGLE export.)
         smartStrangeness: true, // route the shared strange-quark pool to the CURRENT stage first,
                                 // then highest->lowest, instead of the game's stage-1-first dump.
-        strangenessTarget: 'strange7Stage4', // buy this strangeness NEXT (hold others, save quarks
-                                // for it). Default = Interstellar "Elements no longer require
-                                // Collapse" (high ROI: instant element activation, no more forced
-                                // element-collapses). Set to null to disable targeted saving.
+        strangenessTargets: ['strange6Stage4', 'strange7Stage4'],
+                                // buy these strangeness upgrades NEXT, in order, holding others
+                                // while saving quarks. Default = Interstellar Auto Structures first,
+                                // then "Elements no longer require Collapse". Seeded route tests from
+                                // a real Submerged save showed this pair beats default cost-order
+                                // spending for repeated stage-4 pushes.
+        strangenessTarget: null, // legacy single-target override; use strangenessTargets above.
         strangenessTargetTimeoutMs: 600000, // stop holding after 10 min if it can't be bought
-                                // (locked/too expensive) so the rest of strangeness isn't stalled.
+                                // because it appears locked. Expensive-but-unlocked targets are held
+                                // indefinitely; spending around them was slower in seeded tests.
         verbose: false,         // log every action to console
     };
 
@@ -287,23 +291,33 @@
     // which multiplies ALL future quark income — buy it before anything else. strange4Stage5
     // (Intergalactic collapse-immunity + enables Upgrade automatization there) is the next key
     // unlock. Everything else is local/automation and is well-served by current-stage-first below.
-    // strangenessTarget: a single upgrade to buy NEXT — the bot HOLDS other strangeness so quarks
-    // accumulate for it. Default strange7Stage4 = Interstellar "Elements no longer require Collapse"
-    // (index 6, max 1): elements then activate instantly via createAll, ending forced element-
-    // collapses. Resumes normal buying once it's owned, or after strangenessTargetTimeoutMs (so a
-    // locked/too-pricey target can't stall forever). The quark-gain multiplier is always pursued.
+    // strangenessTargets: upgrades to buy NEXT — the bot HOLDS other strangeness so quarks
+    // accumulate for the first unowned target. Default route buys Interstellar Auto Structures
+    // before "Elements no longer require Collapse"; seeded tests from a real Submerged save showed
+    // that getting stage-4 structures automated first speeds repeated Interstellar pushes. Resumes
+    // normal buying once targets are owned. A timeout only releases a target if it appears locked;
+    // expensive-but-unlocked route targets are worth saving for. The quark-gain multiplier is always
+    // pursued.
     let strangeTargetStart = 0;
     function strangeUnowned(id) {
         const m = textOf(id).match(/(\d[\d.eE+]*)\s*\/\s*(\d[\d.eE+]*)/);
         return m ? parseFloat(m[1]) < parseFloat(m[2]) : false; // unparseable/maxed -> treat as owned
     }
+    function currentStrangenessTarget() {
+        const targets = Array.isArray(CONFIG.strangenessTargets) && CONFIG.strangenessTargets.length
+            ? CONFIG.strangenessTargets
+            : (CONFIG.strangenessTarget ? [CONFIG.strangenessTarget] : []);
+        return targets.find((id) => $(id) && strangeUnowned(id)) || null;
+    }
     function buyStrangenessSmart() {
         clickIf('strange3Stage5'); // highest-ROI quark-gain multiplier — always pursue (compounds income)
-        const target = CONFIG.strangenessTarget;
-        if (target && $(target) && strangeUnowned(target)) {
+        const target = currentStrangenessTarget();
+        if (target) {
             if (!strangeTargetStart) strangeTargetStart = Date.now();
             clickIf(target); // buy it the instant quarks allow
-            if (Date.now() - strangeTargetStart <= CONFIG.strangenessTargetTimeoutMs) return; // hold the rest
+            const targetText = textOf(target);
+            const looksLocked = /locked|unlock|requires|reach|need/i.test(targetText);
+            if (!looksLocked || Date.now() - strangeTargetStart <= CONFIG.strangenessTargetTimeoutMs) return; // hold the rest
         } else { strangeTargetStart = 0; }
         clickIf('strange4Stage5'); // Intergalactic collapse-immunity / enables auto-upgrade there
         const cur = activeStage();
@@ -704,7 +718,7 @@
         else if (s === 4) { roiK = 'Collapse boost'; const b = readNum('#collapseBoostTotal > span'); roiV = b != null ? b.toFixed(2) + '\u00d7' : '\u2014'; }
         else if (s === 5) { roiK = 'Merge boost'; const b = readNum('#mergeBoostTotal > span'); roiV = b != null ? b.toFixed(2) + '\u00d7' : '\u2014'; }
         el.fbRoiK.textContent = roiK; el.fbRoiV.textContent = roiV;
-        const tgt = CONFIG.strangenessTarget;
+        const tgt = currentStrangenessTarget();
         el.fbTgt.textContent = tgt ? (($(tgt) && (textOf(tgt).match(/\d[\d.eE+]*\s*\/\s*\d[\d.eE+]*/) || ['\u2014'])[0]) || '\u2014') : 'off';
         setPill(el.fbPScript, running);
         setPill(el.fbPExport, CONFIG.autoExport);
