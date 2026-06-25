@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.11.0
+// @version      1.11.1
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -126,6 +126,19 @@
         verbose: false,         // log every action to console
     };
 
+    const CONFIG_STORAGE_PREFIX = 'fbConfig:';
+    const loadSavedBool = (key) => {
+        try {
+            const saved = localStorage.getItem(CONFIG_STORAGE_PREFIX + key);
+            return saved === null ? CONFIG[key] : saved === '1';
+        } catch (e) {
+            return CONFIG[key];
+        }
+    };
+    CONFIG.autoExport = loadSavedBool('autoExport');
+    CONFIG.smartStrangeness = loadSavedBool('smartStrangeness');
+    CONFIG.collapseOnElement = loadSavedBool('collapseOnElement');
+
     // Text on a reset button that means "not ready yet".
     const NOT_READY = /requires|next goal|reach|need|self[- ]?made|locked|unlock|first|to unlock/i;
 
@@ -205,6 +218,22 @@
         eventLog.push({ t: Date.now(), msg });
         if (eventLog.length > 60) eventLog.shift();
     };
+    function setConfigFlag(key, value) {
+        CONFIG[key] = !!value;
+        try { localStorage.setItem(CONFIG_STORAGE_PREFIX + key, CONFIG[key] ? '1' : '0'); } catch (e) { /* ignore */ }
+        pushLog(`${key} ${CONFIG[key] ? 'ON' : 'OFF'}`);
+        if (key === 'autoExport' && !CONFIG[key]) {
+            suppressNextDownload = false;
+            if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
+            suppressDownloadTimer = null;
+            lastExport = Date.now();
+        } else if (key === 'smartStrangeness' && !CONFIG[key]) {
+            strangeTargetStart = 0;
+        } else if (key === 'collapseOnElement' && !CONFIG[key]) {
+            collapseLastTs = Date.now();
+        }
+        updateHud();
+    }
     const STAGE_NAMES = ['', 'Microworld', 'Submerged', 'Accretion', 'Interstellar', 'Intergalactic', 'Abyss'];
     const fmtDur = (s) => {
         s = Math.max(0, Math.floor(s));
@@ -399,8 +428,11 @@
     // game's own auto-merge, at which point we stop and defer to the game (matching collapse).
     let mergeLastTs = 0;
     function mergeStep() {
+        if (!resetReady('reset0Button') || !/merge/i.test(textOf('reset0Button'))) {
+            mergeLastTs = 0;
+            return;
+        }
         if (!mergeLastTs) mergeLastTs = Date.now();
-        if (!resetReady('reset0Button') || !/merge/i.test(textOf('reset0Button'))) return;
         const boost = readNum('#mergeBoostTotal > span');
         if (boost == null) return; // game auto-merges (strangeness[5][9]≥2) — leave timing to it
         const elapsed = (Date.now() - mergeLastTs) / 1000;
@@ -468,11 +500,14 @@
     // via a data: anchor. Suppress that download ONLY for the bot's auto-exports (flag-gated), so a
     // manual "Export save" still produces a real backup file.
     let suppressNextDownload = false;
+    let suppressDownloadTimer = null;
     function suppressExportDownloads() {
         const origClick = HTMLAnchorElement.prototype.click;
         HTMLAnchorElement.prototype.click = function () {
             if (suppressNextDownload && this.download && /^data:text\/plain/i.test(this.getAttribute('href') || '')) {
                 suppressNextDownload = false;
+                if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
+                suppressDownloadTimer = null;
                 return;
             }
             return origClick.apply(this, arguments);
@@ -499,8 +534,18 @@
             if (CONFIG.autoExport && activeStage() >= 5 && now - lastExport >= CONFIG.exportEveryMs) {
                 lastExport = now;
                 suppressNextDownload = true; // suppress only the auto-export's file download (keep reward)
-                clickIf('export');
-                pushLog('📤 export · claimed strange quarks');
+                if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
+                suppressDownloadTimer = setTimeout(() => {
+                    suppressNextDownload = false;
+                    suppressDownloadTimer = null;
+                }, 1500);
+                if (clickIf('export')) {
+                    pushLog('📤 export · claimed strange quarks');
+                } else {
+                    suppressNextDownload = false;
+                    if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
+                    suppressDownloadTimer = null;
+                }
             }
             updateHud();
         } catch (e) {
@@ -599,9 +644,9 @@
         $('fbMin').onclick = (e) => { e.stopPropagation(); hud.classList.toggle('min'); localStorage.setItem('fbHudMin', hud.classList.contains('min') ? '1' : '0'); };
         if (localStorage.getItem('fbHudMin') === '1') hud.classList.add('min');
         $('fbTgScript').onclick = () => (running ? stop() : start());
-        $('fbTgExport').onclick = () => { CONFIG.autoExport = !CONFIG.autoExport; updateHud(); };
-        $('fbTgStrange').onclick = () => { CONFIG.smartStrangeness = !CONFIG.smartStrangeness; updateHud(); };
-        $('fbTgElem').onclick = () => { CONFIG.collapseOnElement = !CONFIG.collapseOnElement; updateHud(); };
+        $('fbTgExport').onclick = () => setConfigFlag('autoExport', !CONFIG.autoExport);
+        $('fbTgStrange').onclick = () => setConfigFlag('smartStrangeness', !CONFIG.smartStrangeness);
+        $('fbTgElem').onclick = () => setConfigFlag('collapseOnElement', !CONFIG.collapseOnElement);
         $('fbExportBtn').onclick = exportSaveFile;
         const pos = localStorage.getItem('fbHudPos');
         if (pos) { try { const p = JSON.parse(pos); hud.style.left = p.x + 'px'; hud.style.top = p.y + 'px'; hud.style.right = 'auto'; } catch (e) { /* ignore */ } }
@@ -632,7 +677,7 @@
         if (!hud) return;
         const s = activeStage();
         const sw = $('stageWord');
-        hud.className = running ? '' : 'off';
+        hud.classList.toggle('off', !running);
         el.fbState.textContent = running ? 'running' : 'paused';
         el.fbState.style.color = running ? '#7fdca0' : '#f0a0a0';
         el.fbUp.textContent = running && startTs ? fmtDur((Date.now() - startTs) / 1000) : '\u2014';
@@ -645,6 +690,7 @@
         let roiK = 'ROI', roiV = '\u2014';
         if (s === 2) { roiK = 'Vap boost'; const b = readNum('#vaporizationBoostTotal > span'); roiV = b != null ? b.toFixed(2) + '\u00d7' : '\u2014'; }
         else if (s === 4) { roiK = 'Collapse boost'; const b = readNum('#collapseBoostTotal > span'); roiV = b != null ? b.toFixed(2) + '\u00d7' : '\u2014'; }
+        else if (s === 5) { roiK = 'Merge boost'; const b = readNum('#mergeBoostTotal > span'); roiV = b != null ? b.toFixed(2) + '\u00d7' : '\u2014'; }
         el.fbRoiK.textContent = roiK; el.fbRoiV.textContent = roiV;
         const tgt = CONFIG.strangenessTarget;
         el.fbTgt.textContent = tgt ? (($(tgt) && (textOf(tgt).match(/\d[\d.eE+]*\s*\/\s*\d[\d.eE+]*/) || ['\u2014'])[0]) || '\u2014') : 'off';
