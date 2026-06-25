@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.11.3
+// @version      1.11.4
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -54,7 +54,7 @@
 (function () {
     'use strict';
 
-    const BOT_VERSION = '1.11.3';
+    const BOT_VERSION = '1.11.4';
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
@@ -96,6 +96,13 @@
         mergeMaxWaitMs: 120000, // anti-hang: also merge after this long once actionable, in case
                                 // the boost reads modest but galaxies are capped on available mass.
         mergeMinBoost: 1.2,     // floor for the anti-hang merge — don't fire a worthless one.
+        holdStage5WhenActionable: true, // don't stage-reset out of Intergalactic while Galaxy/Merge
+                                // work is visible. Early Stage 5 can be mostly locked; in that case
+                                // resetting to farm quarks is still correct. Once Galaxies/Merges
+                                // are real, holding preserves compounding Stage 5 progress.
+        stage5HoldMaxMs: 1200000, // if only basic Stage 5 building work is visible, hold up to 20m
+                                // before allowing a quark loop. Merge-ready/merge-boost states hold
+                                // indefinitely until mergeStep or the game's own automation handles it.
         collapseBoost: 2.5,     // stage 4: collapse immediately when the production boost
                                 // (#collapseBoostTotal) reaches this multiple — a clearly-good
                                 // collapse is always worth taking now rather than waiting out the
@@ -444,6 +451,7 @@
     // gain of merging now; it's hidden (→ null) once strangeness[5][9]≥2 hands merging to the
     // game's own auto-merge, at which point we stop and defer to the game (matching collapse).
     let mergeLastTs = 0;
+    let stage5HoldStart = 0;
     function mergeStep() {
         if (!resetReady('reset0Button') || !/merge/i.test(textOf('reset0Button'))) {
             mergeLastTs = 0;
@@ -462,6 +470,34 @@
         }
     }
 
+    function stage5HasUnlockedWork() {
+        const mergeBoost = readNum('#mergeBoostTotal > span');
+        if (/merge/i.test(textOf('reset0Button')) && (resetReady('reset0Button') || mergeBoost != null)) return true;
+        for (let i = 1; i <= 4; i++) {
+            const name = textOf('building' + i + 'Name');
+            const btn = textOf('building' + i + 'Btn');
+            if (!name || !btn) continue;
+            if (!/nebula|star|galax/i.test(name)) continue;
+            if (!/locked|unlock/i.test(btn)) return true;
+        }
+        return false;
+    }
+
+    function shouldHoldStage5Reset() {
+        if (!CONFIG.holdStage5WhenActionable || activeStage() !== 5) {
+            stage5HoldStart = 0;
+            return false;
+        }
+        if (!stage5HasUnlockedWork()) {
+            stage5HoldStart = 0;
+            return false;
+        }
+        if (!stage5HoldStart) stage5HoldStart = Date.now();
+        const mergeBoost = readNum('#mergeBoostTotal > span');
+        if (/merge/i.test(textOf('reset0Button')) && (resetReady('reset0Button') || mergeBoost != null)) return true;
+        return Date.now() - stage5HoldStart <= CONFIG.stage5HoldMaxMs;
+    }
+
     // ---- Reset pass -----------------------------------------------------------
     // reset0 = discharge(1) / vaporization(2) / rank(3) / collapse(4) / merge(5) / nucleation(6).
     // Each stage's reset has a very different cost/benefit, so they are handled
@@ -472,6 +508,7 @@
         if (s !== 2 && prevStage === 2) resetVaporTracking(); // left stage 2 — start fresh on return
         if (s !== 4 && prevStage === 4) collapseLastTs = 0;   // left stage 4 — reset collapse cadence
         if (s !== 5 && prevStage === 5) mergeLastTs = 0;      // left stage 5 — reset merge cadence
+        if (s !== 5 && prevStage === 5) stage5HoldStart = 0;   // left stage 5 — reset stage-reset hold
         if (s !== prevStage && prevStage !== 0) pushLog(`🪐 stage → ${STAGE_NAMES[s] || s}`);
         prevStage = s;
 
@@ -500,6 +537,12 @@
 
     function slowResets() {
         if (CONFIG.doStageReset && resetReady('reset1Button')) {
+            if (shouldHoldStage5Reset()) {
+                if (!eventLog.length || eventLog[eventLog.length - 1].msg !== '⏳ holding Stage 5 reset') {
+                    pushLog('⏳ holding Stage 5 reset');
+                }
+                return;
+            }
             clickIf('reset1Button'); log('stage reset');
         }
         if (CONFIG.doEndReset && resetReady('reset2Button')) {
