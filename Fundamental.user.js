@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.11.1
+// @version      1.11.2
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -53,6 +53,9 @@
 
 (function () {
     'use strict';
+
+    const BOT_VERSION = '1.11.2';
+    const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
     const CONFIG = {
@@ -519,6 +522,11 @@
         if (clickIf('export')) pushLog('💾 manual save export');
     }
 
+    function openUpdateUrl() {
+        window.open(UPDATE_URL, '_blank', 'noopener,noreferrer');
+        pushLog('Opened update page');
+    }
+
     function tick() {
         try {
             tickCount++;
@@ -626,6 +634,7 @@
                 <div class="fb-r"><span class="fb-k">State</span><span class="fb-v" id="fbState">\u2014</span></div>
                 <div class="fb-r"><span class="fb-k">Uptime</span><span class="fb-v" id="fbUp">\u2014</span></div>
                 <div class="fb-r"><span class="fb-k">Stage</span><span class="fb-v" id="fbStage">\u2014</span></div>
+                <div class="fb-r"><span class="fb-k">Version</span><span class="fb-v" id="fbVer">\u2014</span></div>
                 <div class="fb-r"><span class="fb-k" id="fbResK">Resource</span><span class="fb-v" id="fbResV">\u2014</span></div>
                 <div class="fb-r"><span class="fb-k" id="fbRoiK">ROI</span><span class="fb-v" id="fbRoiV">\u2014</span></div>
                 <div class="fb-r"><span class="fb-k">Goal</span><span class="fb-v" id="fbGoal">\u2014</span></div>
@@ -637,9 +646,10 @@
                 <div class="fb-tg" id="fbTgStrange"><span class="fb-k">Smart strangeness</span><span class="fb-pill" id="fbPStrange">\u2014</span></div>
                 <div class="fb-tg" id="fbTgElem"><span class="fb-k">Collapse on element</span><span class="fb-pill" id="fbPElem">\u2014</span></div>
                 <div class="fb-btn" id="fbExportBtn">\ud83d\udcbe Export save</div>
+                <div class="fb-btn" id="fbUpdateBtn">Update script</div>
             </div>`;
         document.body.appendChild(hud);
-        ['fbState', 'fbUp', 'fbStage', 'fbResK', 'fbResV', 'fbRoiK', 'fbRoiV', 'fbGoal', 'fbTgt',
+        ['fbState', 'fbUp', 'fbStage', 'fbVer', 'fbResK', 'fbResV', 'fbRoiK', 'fbRoiV', 'fbGoal', 'fbTgt',
          'fbPScript', 'fbPExport', 'fbPStrange', 'fbPElem'].forEach((id) => { el[id] = $(id); });
         $('fbMin').onclick = (e) => { e.stopPropagation(); hud.classList.toggle('min'); localStorage.setItem('fbHudMin', hud.classList.contains('min') ? '1' : '0'); };
         if (localStorage.getItem('fbHudMin') === '1') hud.classList.add('min');
@@ -648,6 +658,7 @@
         $('fbTgStrange').onclick = () => setConfigFlag('smartStrangeness', !CONFIG.smartStrangeness);
         $('fbTgElem').onclick = () => setConfigFlag('collapseOnElement', !CONFIG.collapseOnElement);
         $('fbExportBtn').onclick = exportSaveFile;
+        $('fbUpdateBtn').onclick = openUpdateUrl;
         const pos = localStorage.getItem('fbHudPos');
         if (pos) { try { const p = JSON.parse(pos); hud.style.left = p.x + 'px'; hud.style.top = p.y + 'px'; hud.style.right = 'auto'; } catch (e) { /* ignore */ } }
         makeDraggable($('fbHead'));
@@ -682,6 +693,7 @@
         el.fbState.style.color = running ? '#7fdca0' : '#f0a0a0';
         el.fbUp.textContent = running && startTs ? fmtDur((Date.now() - startTs) / 1000) : '\u2014';
         el.fbStage.textContent = sw ? sw.textContent.trim() : (STAGE_NAMES[s] || '\u2014');
+        el.fbVer.textContent = 'v' + BOT_VERSION;
         if (sw) el.fbStage.style.color = getComputedStyle(sw).color;
         const f1 = textOf('footerStat1'); const ci = f1.indexOf(':');
         el.fbResK.textContent = ci >= 0 ? f1.slice(0, ci).trim() : 'Resource';
