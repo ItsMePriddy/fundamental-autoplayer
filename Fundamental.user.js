@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.12.0
+// @version      1.12.1
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -54,7 +54,7 @@
 (function () {
     'use strict';
 
-    const BOT_VERSION = '1.12.0';
+    const BOT_VERSION = '1.12.1';
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
@@ -133,6 +133,20 @@
                                 // fire during the render lag before the element flips to "created").
         collapseMinGapMs: 2000,  // min gap between star-driven collapses (prevents rapid-fire when
                                 // star gains appear in quick succession after a rebuild).
+        collapseMassMultiplier: 2.0, // ROI trigger: collapse when newMass (shown on the collapse
+                                // button) reaches currentMass × this multiplier. 2.0 = mass must
+                                // at least double since the last successful collapse. This is a
+                                // conservative rebuild-cost heuristic, not a universal optimum.
+        collapseStarMassMin: 1.5, // star-gain trigger floor: only collapse on new stars if the
+                                // mass also increases by at least 50% (1.5×). Without this floor,
+                                // the bot collapses for a single new star that gives a negligible
+                                // mass gain (e.g., 1.02×), resetting all buildings for tiny ROI.
+        collapseMassThresholds: [0.01235, 0.076, 0.18, 0.23, 0.3, 0.8, 1.3, 10, 40, 1000],
+                                // hard-coded mass values at which the game unlocks new stage-4
+                                // buildings, upgrades, or researches. Collapsing exactly when
+                                // crossing one of these thresholds unlocks new content
+                                // immediately. Sources: collapseInfo.unlockB/unlockU/unlockR.
+                                // If currentMass is already above a threshold, it's skipped.
         autoExport: true,       // stage 5+: periodically click #export to claim Strange-quark
                                 // rewards. The save-file download it triggers is suppressed
                                 // (no files saved) — only the in-game reward is kept.
@@ -432,21 +446,22 @@
 
     // ---- Collapse timing (stage 4) -------------------------------------------
     // Collapse banks stars (permanent) and mass (production multiplier) by resetting
-    // stage-4 buildings. Unlike vaporization (where the boost directly measures the
-    // production gain), collapse progression is measured in STARS per second — each
-    // star permanently increases mass gain, compounding future cycles.
+    // stage-4 buildings. Progression is gated by MASS thresholds — the game unlocks new
+    // buildings, upgrades, and researches at specific solar masses (see collapseMassThresholds).
     //
-    // The game's #special1Get/#special2Get/#special3Get show net new stars this
-    // collapse would grant (starCheck[0/1/2] from assignResetInformation.newStars).
-    // These are the MOST RELIABLE indicator of collapse benefit — if any > 0, the
-    // game's collapseResetCheck will accept the collapse.
+    // The collapse button shows projected newMass ("Collapse is at X Mass"), while
+    // #solarMassStat shows the banked currentMass. Their ratio is the ROI multiplier —
+    // collapsing when this is too low (e.g. 1.02×) wastes the building rebuild cost
+    // for negligible mass gain.
     //
     // Triggers (checked in priority order, first match wins):
-    //   1. Star-gain: any #specialNGet > 0 AND elapsed ≥ collapseMinGapMs
-    //   2. Element-pending: an element is "awaiting" AND elapsed ≥ collapseElementGapMs
-    //   3. Strong boost: #collapseBoostTotal ≥ collapseBoost (now 2.0)
-    //   4. Hard-stall breaker: elapsed ≥ collapseHardStallMs (5min) — unconditional
-    //   5. Anti-hang: elapsed ≥ collapseMaxWaitMs (45s) AND boost ≥ collapseMinBoost (1.0)
+    //   1. Mass threshold: newMass crosses an unlock threshold currentMass hasn't reached yet
+    //   2. ROI multiplier: newMass ≥ currentMass × collapseMassMultiplier (2.0 = mass doubled)
+    //   3. Star-gain with mass floor: stars available AND newMass ≥ currentMass × collapseStarMassMin
+    //   4. Element-pending: an element is "awaiting" AND elapsed ≥ collapseElementGapMs
+    //   5. Strong boost: #collapseBoostTotal ≥ collapseBoost (2.0)
+    //   6. Hard-stall breaker: elapsed ≥ collapseHardStallMs (5min) — unconditional
+    //   7. Anti-hang: elapsed ≥ collapseMaxWaitMs (45s) AND boost ≥ collapseMinBoost (1.0)
     //
     // #collapseBoostTotal disappears once the game's own auto-collapse takes over
     // (strangeness[4][4] ≥ 3) — then we leave timing to the game entirely.
@@ -468,37 +483,73 @@
         const sinceAttempt = (Date.now() - collapseLastAttemptTs) / 1000;
         if (collapseLastAttemptTs && sinceAttempt < CONFIG.collapseMinGapMs / 1000) return;
 
-        // Star gains — the most reliable collapse-benefit signal (see note above).
+        // Projected mass comes from the button; banked mass is a separate stat.
+        const newMass = numFromText(textOf('reset0Button'));
+        const currentMass = readNum('#solarMassStat > span');
+
+        // Star gains
         const sg = readStarGains();
         const hasStarGain = (sg.s0 !== null && sg.s0 > 0) ||
                             (sg.s1 !== null && sg.s1 > 0) ||
                             (sg.s2 !== null && sg.s2 > 0);
 
-        // A pending element (#elementN has class "awaiting") only activates ON a collapse.
-        // Self-disabling: with the "elements don't need collapse" strangeness, elements skip
-        // "awaiting" so this trigger naturally becomes inert at strangeness[4][6] ≥ 1.
+        // Element pending (self-disabling when strangeness[4][6] ≥ 1)
         const elementPending = CONFIG.collapseOnElement && !!document.querySelector('[id^="element"].awaiting');
+
+        // Mass threshold crossing: any unlock threshold between currentMass and newMass?
+        const nextThreshold = newMass && currentMass != null
+            ? CONFIG.collapseMassThresholds.find(t => t > currentMass && t <= newMass)
+            : null;
 
         let fire = false;
         let reason = '';
-        if (hasStarGain && elapsed >= CONFIG.collapseMinGapMs / 1000) {
-            fire = true; reason = 'star';
+
+        if (nextThreshold && elapsed >= CONFIG.collapseMinGapMs / 1000) {
+            fire = true; reason = 'threshold ' + nextThreshold;             // 1. mass unlock
+        } else if (newMass && currentMass != null &&
+                   newMass >= currentMass * CONFIG.collapseMassMultiplier &&
+                   elapsed >= CONFIG.collapseMinGapMs / 1000) {
+            fire = true; reason = 'roi';                                     // 2. ROI multiplier
+        } else if (hasStarGain && newMass && currentMass != null &&
+                   newMass >= currentMass * CONFIG.collapseStarMassMin &&
+                   elapsed >= CONFIG.collapseMinGapMs / 1000) {
+            fire = true; reason = 'star';                                    // 3. stars + mass floor
         } else if (elementPending && elapsed >= CONFIG.collapseElementGapMs / 1000) {
-            fire = true; reason = 'element';
+            fire = true; reason = 'element';                                 // 4. element pending
         } else if (boost != null && boost >= CONFIG.collapseBoost) {
-            fire = true; reason = 'boost';
+            fire = true; reason = 'boost';                                   // 5. strong boost
         } else if (elapsed >= CONFIG.collapseHardStallMs / 1000) {
-            fire = true; reason = 'hardstall';
-        } else if (elapsed >= CONFIG.collapseMaxWaitMs / 1000 && boost >= CONFIG.collapseMinBoost) {
-            fire = true; reason = 'antihang';
+            fire = true; reason = 'hardstall';                               // 6. unconditional
+        } else if (elapsed >= CONFIG.collapseMaxWaitMs / 1000 && (boost == null || boost >= CONFIG.collapseMinBoost)) {
+            fire = true; reason = 'antihang';                                // 7. anti-hang
         }
 
         if (fire) {
-            clickIf('reset0Button');
+            const preStars = [sg.s0, sg.s1, sg.s2];
+            const prePending = document.querySelectorAll('[id^="element"].awaiting').length;
+            const clicked = clickIf('reset0Button');
             collapseLastAttemptTs = Date.now();
-            if (reason !== 'antihang' && reason !== 'hardstall') collapseLastTs = Date.now();
+
+            // Confirm one of the three game-side rewards changed. The button contains
+            // projected mass, so comparing its text alone can miss star-only collapses.
+            const postMass = readNum('#solarMassStat > span');
+            const postStars = readStarGains();
+            const postPending = document.querySelectorAll('[id^="element"].awaiting').length;
+            const starsChanged = [postStars.s0, postStars.s1, postStars.s2]
+                .some((value, i) => value !== preStars[i]);
+            const accepted = clicked && (
+                (currentMass != null && postMass != null && postMass > currentMass) ||
+                starsChanged ||
+                postPending < prePending
+            );
+            if (accepted) {
+                collapseLastTs = Date.now();
+            }
+            // If rejected, keep collapseLastTs so timers continue accumulating.
+
             const gainDetail = hasStarGain ? ` +${[sg.s0,sg.s1,sg.s2].filter(v => v != null && v > 0).join('/')}★` : '';
-            pushLog('💥 collapse (' + reason + ')' + gainDetail + (boost != null ? ' ' + boost.toFixed(2) + '×' : ''));
+            const massDetail = newMass ? ' ' + newMass.toFixed(2) + 'M☉' : '';
+            pushLog('💥 collapse (' + reason + ')' + gainDetail + massDetail + (boost != null ? ' ' + boost.toFixed(2) + '×' : ''));
         }
     }
 

@@ -9,7 +9,7 @@ A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 - Script: `/Users/spencer/Downloads/Personal/Coding/Fundamental Player/Fundamental.user.js`
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer
 - Install/update URL: `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
-- Current shipped target: **v1.12.0**.
+- Current shipped target: **v1.12.1**.
 
 ## Token discipline
 - Do **not** use browser screenshots or Chrome tooling without asking first.
@@ -39,16 +39,18 @@ except where a stage has custom logic.
 - Stage 5 merge: `mergeStep()` gates merges on `#mergeBoostTotal > span >= 2.0`, with a 120s anti-hang at `>= 1.2`. It preserves its timer through DOM flicker and defers to game automation once merge boost disappears.
 - Stage 6 nucleation: off by default (`highStageResets = false`), leaving timing to the game's automation.
 
-## Stage 4 collapse model in v1.12.0
+## Stage 4 collapse model in v1.12.1
 This was retuned from source-level game analysis plus 30-minute headless sims from
 the user's real Interstellar save (58 quarks, 141 nova stars, 39 novas, 33.5 mass,
-`progress.main = 14`).
+`progress.main = 14`). The v1.12.1 update adds mass-threshold gating and an ROI
+multiplier heuristic to prevent collapsing for negligible mass gains.
 
 Key mechanics:
 - `#special1Get`, `#special2Get`, `#special3Get` show `starCheck[0/1/2]`, the most reliable signal that collapse is beneficial.
 - `#collapseBoostTotal` is only a production boost metric and can flatline at `1.000x` when no more buildings can be purchased.
-- The collapse button text often says `Collapse is at X Mass`, so a generic `resetReady()` check is unreliable here.
+- The collapse button shows projected newMass: `Collapse is at X Mass`; `#solarMassStat > span` shows the banked currentMass used for threshold and ROI comparisons.
 - The game silently rejects collapse clicks unless star gain is positive, new collapse mass exceeds current mass, or elements are pending.
+- **Mass thresholds**: The game unlocks new buildings/upgrades/researches at specific solar masses (unlockB/unlockU/unlockR in collapseInfo). Collapsing right when crossing a threshold unlocks new content immediately.
 
 Current config:
 - `collapseBoost = 2.0`
@@ -57,18 +59,23 @@ Current config:
 - `collapseHardStallMs = 300000`
 - `collapseMinGapMs = 2000`
 - `collapseElementGapMs = 3000`
+- `collapseMassMultiplier = 2.0` — ROI trigger: mass must at least double since last collapse
+- `collapseStarMassMin = 1.5` — star trigger floor: mass must increase ≥50% for stars alone to justify collapsing
+- `collapseMassThresholds = [0.01235, 0.076, 0.18, 0.23, 0.3, 0.8, 1.3, 10, 40, 1000]` — hard-coded unlock points
 
 `collapseStep()` uses this priority order:
-1. Star gain: collapse when any `#specialNGet` is positive and the min gap elapsed.
-2. Pending element: collapse when an `#elementN.awaiting` exists and the element gap elapsed.
-3. Strong boost: collapse at `#collapseBoostTotal >= 2.0`.
-4. Hard stall: after 5 minutes since a real collapse-trigger, click unconditionally.
-5. Anti-hang: after 45s at boost `>= 1.0`.
+1. **Mass threshold**: newMass crosses an unlock threshold that currentMass hasn't reached yet
+2. **ROI multiplier**: newMass ≥ currentMass × `collapseMassMultiplier` (2.0 = mass doubled)
+3. **Star-gain with mass floor**: stars available AND newMass ≥ currentMass × `collapseStarMassMin` (1.5 = +50% mass)
+4. **Element pending**: an `#elementN.awaiting` exists and element gap elapsed
+5. **Strong boost**: `#collapseBoostTotal ≥ 2.0`
+6. **Hard stall**: after 5 minutes since last accepted collapse, click unconditionally
+7. **Anti-hang**: after 45s at boost ≥ 1.0
 
 Important timer behavior:
-- Star, element, and strong-boost collapses reset the collapse cadence timer.
-- Anti-hang and hard-stall attempts do **not** reset that timer, because the game may silently reject them.
-- A separate attempt cooldown prevents rapid-fire rejected clicks.
+- After clicking, the bot verifies that banked mass, pending star gains, or pending elements changed before treating the collapse as accepted.
+- If none changed, the collapse was silently rejected → keep `collapseLastTs` intact so timers continue accumulating.
+- Collapse cadence resets when leaving/re-entering stage 4.
 - If `#collapseBoostTotal` disappears, the game has taken over auto-collapse and the bot defers to it.
 
 HUD behavior:
