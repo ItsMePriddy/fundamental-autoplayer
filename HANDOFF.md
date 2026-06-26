@@ -8,7 +8,7 @@ A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 - Script: `/Users/spencer/Downloads/Personal/Claude/Fundamental Player/Fundamental.user.js`
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer (public). Author = `ItsMePriddy` / `spencer@thepriddys.com`.
 - Install/update (always the same raw URL): `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
-- **Current shipped version: v1.9.1.**
+- **Current shipped version: v1.11.5.**
 
 ## TOKEN DISCIPLINE (the user's #1 priority — read this)
 - Do **NOT** use the Chrome MCP / screenshots without asking first — image tokens are the biggest cost. Ask, explain what you need and why.

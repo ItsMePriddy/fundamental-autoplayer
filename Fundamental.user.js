@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.11.4
+// @version      1.11.5
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -54,7 +54,7 @@
 (function () {
     'use strict';
 
-    const BOT_VERSION = '1.11.4';
+    const BOT_VERSION = '1.11.5';
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
@@ -154,7 +154,7 @@
     CONFIG.collapseOnElement = loadSavedBool('collapseOnElement');
 
     // Text on a reset button that means "not ready yet".
-    const NOT_READY = /requires|next goal|reach|need|self[- ]?made|locked|unlock|first|to unlock/i;
+    const NOT_READY = /requires|next goal|reach|need|self[- ]?made|locked|unlock|to unlock/i;
 
     // ---- Helpers --------------------------------------------------------------
     const $ = (id) => document.getElementById(id);
@@ -240,6 +240,7 @@
             suppressNextDownload = false;
             if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
             suppressDownloadTimer = null;
+            restoreExportDownloadSuppressor();
             lastExport = Date.now();
         } else if (key === 'smartStrangeness' && !CONFIG[key]) {
             strangeTargetStart = 0;
@@ -262,7 +263,7 @@
     // only when it's really the offline prompt (don't blindly confirm other alerts).
     function acceptOfflineDialog() {
         const box = $('alertMain');
-        if (!box || box.offsetParent === null) return; // no dialog showing
+        if (!box || getComputedStyle(box).display === 'none') return; // no dialog showing
         const msg = textOf('alertText');
         if (/offline time/i.test(msg)) clickIf('alertConfirm');
     }
@@ -561,21 +562,43 @@
     // manual "Export save" still produces a real backup file.
     let suppressNextDownload = false;
     let suppressDownloadTimer = null;
+    let restoreCreateElement = null;
+    function restoreExportDownloadSuppressor() {
+        if (!restoreCreateElement) return;
+        restoreCreateElement();
+        restoreCreateElement = null;
+    }
     function suppressExportDownloads() {
-        const origClick = HTMLAnchorElement.prototype.click;
-        HTMLAnchorElement.prototype.click = function () {
-            if (suppressNextDownload && this.download && /^data:text\/plain/i.test(this.getAttribute('href') || '')) {
-                suppressNextDownload = false;
-                if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
-                suppressDownloadTimer = null;
-                return;
+        if (restoreCreateElement) return;
+        const origCreateElement = document.createElement;
+        const wrappedCreateElement = function (tagName) {
+            const el = origCreateElement.apply(this, arguments);
+            if (suppressNextDownload && String(tagName).toLowerCase() === 'a') {
+                const origClick = el.click;
+                el.click = function () {
+                    const href = this.getAttribute('href') || this.href || '';
+                    const isDownload = this.hasAttribute('download') || !!this.download;
+                    if (suppressNextDownload && isDownload && /^data:text\/plain/i.test(href)) {
+                        suppressNextDownload = false;
+                        if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
+                        suppressDownloadTimer = null;
+                        restoreExportDownloadSuppressor();
+                        return;
+                    }
+                    return origClick.apply(this, arguments);
+                };
             }
-            return origClick.apply(this, arguments);
+            return el;
+        };
+        document.createElement = wrappedCreateElement;
+        restoreCreateElement = () => {
+            if (document.createElement === wrappedCreateElement) document.createElement = origCreateElement;
         };
     }
     // Manual save export — clicks the game's Export with the download allowed (real file).
     function exportSaveFile() {
         suppressNextDownload = false;
+        restoreExportDownloadSuppressor();
         if (clickIf('export')) pushLog('💾 manual save export');
     }
 
@@ -600,9 +623,11 @@
                 lastExport = now;
                 suppressNextDownload = true; // suppress only the auto-export's file download (keep reward)
                 if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
+                suppressExportDownloads();
                 suppressDownloadTimer = setTimeout(() => {
                     suppressNextDownload = false;
                     suppressDownloadTimer = null;
+                    restoreExportDownloadSuppressor();
                 }, 1500);
                 if (clickIf('export')) {
                     pushLog('📤 export · claimed strange quarks');
@@ -610,6 +635,7 @@
                     suppressNextDownload = false;
                     if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
                     suppressDownloadTimer = null;
+                    restoreExportDownloadSuppressor();
                 }
             }
             updateHud();
@@ -637,6 +663,10 @@
         running = false;
         if (mainTimer) clearInterval(mainTimer);
         mainTimer = null;
+        suppressNextDownload = false;
+        if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
+        suppressDownloadTimer = null;
+        restoreExportDownloadSuppressor();
         pushLog('⏸ autoplayer stopped');
         updateHud();
         log('stopped');
@@ -772,7 +802,6 @@
     // ---- Boot -----------------------------------------------------------------
     function boot() {
         if (!exists('makeAllFooter')) { setTimeout(boot, 500); return; } // wait for game UI
-        suppressExportDownloads();
         buildHud();
         // expose manual controls for the console
         window.FundamentalBot = { start, stop, tick, CONFIG, report, cycles: cycleLog, log: eventLog, exportSave: exportSaveFile };
