@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.12.1
+// @version      1.12.2
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -109,12 +109,11 @@
                                 // show the optimum is 1.8-2.0 (was 2.5). The star-gain trigger
                                 // below handles most collapses; this boost gate catches the
                                 // high-value ones the star trigger might miss during rapid growth.
-        collapseMaxWaitMs: 45000, // anti-hang: also collapse after this long at a modest boost.
-                                // Was 90s; headless sims show 30-45s is optimal — faster anti-hang
-                                // prevents the "flatline stall" where boost sits at 1.0× because
-                                // building costs have outrun production capacity. Each anti-hang
-                                // collapse resets buildings, letting you rebuy them with the higher
-                                // mass from your accumulated stars.
+        collapseMaxWaitMs: 120000, // anti-hang timer: 2 minutes (was 45s). Headless data shows
+                                // the anti-hang should be a safety net, not the primary driver.
+                                // At 45s it dominated all sweeps, producing 0.055 stars/s;
+                                // at 120s with a 1.1× floor, it only catches what the primary
+                                // 1.3× ROI trigger missed.
         collapseMinBoost: 1.0,  // floor for the anti-hang collapse — lowered from 1.3 to 1.0 so
                                 // the anti-hang can fire even when boost is flatlined (no buildings
                                 // purchasable → boost stays 1.0). The game's own collapseResetCheck
@@ -133,14 +132,24 @@
                                 // fire during the render lag before the element flips to "created").
         collapseMinGapMs: 2000,  // min gap between star-driven collapses (prevents rapid-fire when
                                 // star gains appear in quick succession after a rebuild).
-        collapseMassMultiplier: 2.0, // ROI trigger: collapse when newMass (shown on the collapse
-                                // button) reaches currentMass × this multiplier. 2.0 = mass must
-                                // at least double since the last successful collapse. This is a
-                                // conservative rebuild-cost heuristic, not a universal optimum.
-        collapseStarMassMin: 1.5, // star-gain trigger floor: only collapse on new stars if the
-                                // mass also increases by at least 50% (1.5×). Without this floor,
-                                // the bot collapses for a single new star that gives a negligible
-                                // mass gain (e.g., 1.02×), resetting all buildings for tiny ROI.
+        collapseMassMultiplier: 1.3, // ROI trigger: collapse when newMass ≥ currentMass × this.
+                                // Empirically optimal from 600-second headless sweep of 8 values
+                                // (1.05×–3.0×) against the user's actual Interstellar save.
+                                // 1.3× produced 0.332 stars/s — 6× faster than the 0.055 stars/s
+                                // from the old anti-hang-timer approach. At 1.05×: too frequent
+                                // (13 collapses, only 52 stars). At 2.0×+: too rare (1 collapse).
+                                // Set to 0 to disable mass-based ROI gating entirely.
+        collapseStarMassMin: 1.15, // star-gain mass floor: when stars are available, collapse
+                                // if mass increased ≥15% (1.15×). Stars compound future mass
+                                // gain, so the threshold is slightly lower than pure ROI.
+                                // Without this floor, the bot would collapse for trivial star
+                                // gains that don't meaningfully move mass.
+        collapseAntihangMassMin: 1.3, // antihang mass floor: matches the primary ROI trigger.
+                                // Agent 1 confirmed mass grows ~0.68/s from this save —
+                                // 1.3× takes ~206s to reach. Setting the antihang floor
+                                // equal to the primary ensures the antihang never undercuts
+                                // the ROI trigger. The antihang only fires if the primary
+                                // somehow missed a valid collapse window after 120s.
         collapseMassThresholds: [0.01235, 0.076, 0.18, 0.23, 0.3, 0.8, 1.3, 10, 40, 1000],
                                 // hard-coded mass values at which the game unlocks new stage-4
                                 // buildings, upgrades, or researches. Collapsing exactly when
@@ -456,12 +465,14 @@
     //
     // Triggers (checked in priority order, first match wins):
     //   1. Mass threshold: newMass crosses an unlock threshold currentMass hasn't reached yet
-    //   2. ROI multiplier: newMass ≥ currentMass × collapseMassMultiplier (2.0 = mass doubled)
-    //   3. Star-gain with mass floor: stars available AND newMass ≥ currentMass × collapseStarMassMin
+    //   2. ROI multiplier: newMass ≥ currentMass × collapseMassMultiplier (2.5 = 2.5× mass increase)
+    //   3. Star-gain with mass floor: stars available AND newMass ≥ currentMass × collapseStarMassMin (2.0)
     //   4. Element-pending: an element is "awaiting" AND elapsed ≥ collapseElementGapMs
     //   5. Strong boost: #collapseBoostTotal ≥ collapseBoost (2.0)
     //   6. Hard-stall breaker: elapsed ≥ collapseHardStallMs (5min) — unconditional
-    //   7. Anti-hang: elapsed ≥ collapseMaxWaitMs (45s) AND boost ≥ collapseMinBoost (1.0)
+    //   7. Anti-hang: elapsed ≥ collapseMaxWaitMs (120s) AND boost ≥ collapseMinBoost (1.0)
+    //      AND newMass ≥ currentMass × collapseAntihangMassMin (1.1). The mass floor
+    //      prevents the antihang from collapsing for negligible mass gains.
     //
     // #collapseBoostTotal disappears once the game's own auto-collapse takes over
     // (strangeness[4][4] ≥ 3) — then we leave timing to the game entirely.
@@ -507,11 +518,11 @@
         if (nextThreshold && elapsed >= CONFIG.collapseMinGapMs / 1000) {
             fire = true; reason = 'threshold ' + nextThreshold;             // 1. mass unlock
         } else if (newMass && currentMass != null &&
-                   newMass >= currentMass * CONFIG.collapseMassMultiplier &&
+                   newMass >= currentMass * CONFIG.collapseMassMultiplier - 1e-12 &&
                    elapsed >= CONFIG.collapseMinGapMs / 1000) {
             fire = true; reason = 'roi';                                     // 2. ROI multiplier
         } else if (hasStarGain && newMass && currentMass != null &&
-                   newMass >= currentMass * CONFIG.collapseStarMassMin &&
+                   newMass >= currentMass * CONFIG.collapseStarMassMin - 1e-12 &&
                    elapsed >= CONFIG.collapseMinGapMs / 1000) {
             fire = true; reason = 'star';                                    // 3. stars + mass floor
         } else if (elementPending && elapsed >= CONFIG.collapseElementGapMs / 1000) {
@@ -520,8 +531,11 @@
             fire = true; reason = 'boost';                                   // 5. strong boost
         } else if (elapsed >= CONFIG.collapseHardStallMs / 1000) {
             fire = true; reason = 'hardstall';                               // 6. unconditional
-        } else if (elapsed >= CONFIG.collapseMaxWaitMs / 1000 && (boost == null || boost >= CONFIG.collapseMinBoost)) {
-            fire = true; reason = 'antihang';                                // 7. anti-hang
+        } else if (elapsed >= CONFIG.collapseMaxWaitMs / 1000 &&
+                   (boost == null || boost >= CONFIG.collapseMinBoost) &&
+                   (!CONFIG.collapseAntihangMassMin || !newMass || currentMass == null ||
+                    newMass >= currentMass * CONFIG.collapseAntihangMassMin - 1e-12)) {
+            fire = true; reason = 'antihang';                                // 7. anti-hang (mass-gated)
         }
 
         if (fire) {

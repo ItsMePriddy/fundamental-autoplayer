@@ -52,25 +52,32 @@ Key mechanics:
 - The game silently rejects collapse clicks unless star gain is positive, new collapse mass exceeds current mass, or elements are pending.
 - **Mass thresholds**: The game unlocks new buildings/upgrades/researches at specific solar masses (unlockB/unlockU/unlockR in collapseInfo). Collapsing right when crossing a threshold unlocks new content immediately.
 
-Current config:
+Current config (empirically optimized from 3-agent sweep):
 - `collapseBoost = 2.0`
-- `collapseMaxWaitMs = 45000`
+- `collapseMaxWaitMs = 120000` (2 min — safety net, not primary driver)
 - `collapseMinBoost = 1.0`
 - `collapseHardStallMs = 300000`
 - `collapseMinGapMs = 2000`
 - `collapseElementGapMs = 3000`
-- `collapseMassMultiplier = 2.0` — ROI trigger: mass must at least double since last collapse
-- `collapseStarMassMin = 1.5` — star trigger floor: mass must increase ≥50% for stars alone to justify collapsing
-- `collapseMassThresholds = [0.01235, 0.076, 0.18, 0.23, 0.3, 0.8, 1.3, 10, 40, 1000]` — hard-coded unlock points
+- `collapseMassMultiplier = 1.3` — ROI trigger: empirically optimal from 600s headless sweep
+- `collapseStarMassMin = 1.15` — star trigger floor: slightly lower than ROI
+- `collapseAntihangMassMin = 1.3` — antihang floor: matches primary ROI (never undercuts it)
+- `collapseMassThresholds = [0.01235, 0.076, 0.18, 0.23, 0.3, 0.8, 1.3, 10, 40, 1000]`
+
+Headless validation (user's 467.6-mass save, 600s sims):
+- **1.3× mass-only**: 7 collapses, 199 stars, **0.332 stars/s** — 6× faster than anti-hang
+- **1.05×**: 13 collapses, 52 stars, 0.087 stars/s — collapsing too frequently
+- **2.5×+**: 1 collapse, 140 stars, 0.232 stars/s — waiting too long
+- **Anti-hang 60s (no mass floor)**: 10 collapses, 33 stars, 0.055 stars/s — anti-hang was the bottleneck
 
 `collapseStep()` uses this priority order:
 1. **Mass threshold**: newMass crosses an unlock threshold that currentMass hasn't reached yet
-2. **ROI multiplier**: newMass ≥ currentMass × `collapseMassMultiplier` (2.0 = mass doubled)
-3. **Star-gain with mass floor**: stars available AND newMass ≥ currentMass × `collapseStarMassMin` (1.5 = +50% mass)
+2. **ROI multiplier**: newMass ≥ currentMass × `collapseMassMultiplier` (1.3 = 30% mass increase)
+3. **Star-gain with mass floor**: stars available AND newMass ≥ currentMass × `collapseStarMassMin` (1.15 = 15% increase)
 4. **Element pending**: an `#elementN.awaiting` exists and element gap elapsed
 5. **Strong boost**: `#collapseBoostTotal ≥ 2.0`
 6. **Hard stall**: after 5 minutes since last accepted collapse, click unconditionally
-7. **Anti-hang**: after 45s at boost ≥ 1.0
+7. **Anti-hang**: after 2 min at boost ≥ 1.0 AND newMass ≥ currentMass × `collapseAntihangMassMin` (1.1 = 10% increase). This is a safety net, not the primary driver — headless data proved the anti-hang at 45s was the performance bottleneck (0.055 vs 0.332 stars/s).
 
 Important timer behavior:
 - After clicking, the bot verifies that banked mass, pending star gains, or pending elements changed before treating the collapse as accepted.
