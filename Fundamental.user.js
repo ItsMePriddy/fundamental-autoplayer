@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.11.7
+// @version      1.12.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -54,7 +54,7 @@
 (function () {
     'use strict';
 
-    const BOT_VERSION = '1.11.7';
+    const BOT_VERSION = '1.12.0';
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
@@ -103,21 +103,36 @@
         stage5HoldMaxMs: 1200000, // if only basic Stage 5 building work is visible, hold up to 20m
                                 // before allowing a quark loop. Merge-ready/merge-boost states hold
                                 // indefinitely until mergeStep or the game's own automation handles it.
-        collapseBoost: 2.5,     // stage 4: collapse when any collapse goal is ready, or when
-                                // the production boost
-                                // (#collapseBoostTotal) reaches this multiple — a clearly-good
-                                // collapse is always worth taking now rather than waiting out the
-                                // anti-hang timer. Early stage-4 boosts hover low (~1-1.3), so most
-                                // collapses come from the anti-hang below until mass/stars scale up.
-        collapseMaxWaitMs: 90000, // anti-hang: also collapse after this long at a modest boost, so
-                                // collapse-gated elements and mass-locked upgrades keep unlocking
-                                // (a pure boost gate can stall when a collapse is what's needed).
-        collapseMinBoost: 1.3,  // floor for the anti-hang collapse — don't fire a worthless reset.
+        collapseBoost: 2.0,     // stage 4: collapse when the production boost
+                                // (#collapseBoostTotal) reaches this multiple — headless
+                                // simulations from a real Interstellar save (v1.12 tuning pass)
+                                // show the optimum is 1.8-2.0 (was 2.5). The star-gain trigger
+                                // below handles most collapses; this boost gate catches the
+                                // high-value ones the star trigger might miss during rapid growth.
+        collapseMaxWaitMs: 45000, // anti-hang: also collapse after this long at a modest boost.
+                                // Was 90s; headless sims show 30-45s is optimal — faster anti-hang
+                                // prevents the "flatline stall" where boost sits at 1.0× because
+                                // building costs have outrun production capacity. Each anti-hang
+                                // collapse resets buildings, letting you rebuy them with the higher
+                                // mass from your accumulated stars.
+        collapseMinBoost: 1.0,  // floor for the anti-hang collapse — lowered from 1.3 to 1.0 so
+                                // the anti-hang can fire even when boost is flatlined (no buildings
+                                // purchasable → boost stays 1.0). The game's own collapseResetCheck
+                                // still prevents worthless collapses (it rejects when starCheck=0
+                                // AND newMass≤currentMass AND no pending elements).
+        collapseHardStallMs: 300000, // hard-stall breaker: fire an unconditional collapse after
+                                // 5 minutes without ANY collapse, regardless of boost. This breaks
+                                // deadlocks where boost is 1.0 and the anti-hang keeps getting
+                                // rejected by the game (mass hasn't increased, no stars available).
+                                // Even a rejected click keeps the timer running so the breaker
+                                // eventually forces a state change through sheer elapsed time.
         collapseOnElement: true, // collapse ASAP when a new element is pending (awaiting activation)
                                 // — elements only activate on collapse and their boost isn't in
                                 // #collapseBoostTotal, so grabbing them fast is high-ROI.
         collapseElementGapMs: 3000, // min gap between element-triggered collapses (avoids a double
                                 // fire during the render lag before the element flips to "created").
+        collapseMinGapMs: 2000,  // min gap between star-driven collapses (prevents rapid-fire when
+                                // star gains appear in quick succession after a rebuild).
         autoExport: true,       // stage 5+: periodically click #export to claim Strange-quark
                                 // rewards. The save-file download it triggers is suppressed
                                 // (no files saved) — only the in-game reward is kept.
@@ -416,35 +431,74 @@
     };
 
     // ---- Collapse timing (stage 4) -------------------------------------------
-    // Collapse is unlike vaporization: elements only unlock ON a collapse and some
-    // upgrades are gated behind mass thresholds, so a pure boost gate can stall when
-    // a collapse is exactly what's needed to progress. Fire when the game reports
-    // any collapse goal ready, on a strong production boost, or periodically
-    // (anti-hang) at a modest boost so collapse-gated elements / mass-locked upgrades
-    // keep unlocking. #collapseBoostTotal disappears
-    // once the game's own auto-collapse takes over (strangeness lvl 3) — then we leave
-    // it to the game. (Elements that are "ready" are auto-bought by the collapse itself.)
+    // Collapse banks stars (permanent) and mass (production multiplier) by resetting
+    // stage-4 buildings. Unlike vaporization (where the boost directly measures the
+    // production gain), collapse progression is measured in STARS per second — each
+    // star permanently increases mass gain, compounding future cycles.
+    //
+    // The game's #special1Get/#special2Get/#special3Get show net new stars this
+    // collapse would grant (starCheck[0/1/2] from assignResetInformation.newStars).
+    // These are the MOST RELIABLE indicator of collapse benefit — if any > 0, the
+    // game's collapseResetCheck will accept the collapse.
+    //
+    // Triggers (checked in priority order, first match wins):
+    //   1. Star-gain: any #specialNGet > 0 AND elapsed ≥ collapseMinGapMs
+    //   2. Element-pending: an element is "awaiting" AND elapsed ≥ collapseElementGapMs
+    //   3. Strong boost: #collapseBoostTotal ≥ collapseBoost (now 2.0)
+    //   4. Hard-stall breaker: elapsed ≥ collapseHardStallMs (5min) — unconditional
+    //   5. Anti-hang: elapsed ≥ collapseMaxWaitMs (45s) AND boost ≥ collapseMinBoost (1.0)
+    //
+    // #collapseBoostTotal disappears once the game's own auto-collapse takes over
+    // (strangeness[4][4] ≥ 3) — then we leave timing to the game entirely.
     let collapseLastTs = 0;
+    let collapseLastAttemptTs = 0;
+    function readStarGains() {
+        return {
+            s0: readNum('#special1Get'),
+            s1: readNum('#special2Get'),
+            s2: readNum('#special3Get'),
+        };
+    }
     function collapseStep() {
         if (!collapseLastTs) collapseLastTs = Date.now();
         if (!/collapse/i.test(textOf('reset0Button'))) return; // not the collapse reset / not actionable
         const boost = readNum('#collapseBoostTotal > span'); // null when the game auto-handles it
+        if (boost == null) return;
         const elapsed = (Date.now() - collapseLastTs) / 1000;
-        const goalReady = resetReady('reset0Button');
-        // A pending element (#elementN has class "awaiting") only activates ON a collapse, and its
-        // permanent boost is NOT included in #collapseBoostTotal (elements apply during the reset),
-        // so the boost reading understates the true value. Collapse promptly to bank it. Self-
-        // disabling: with the "elements don't need collapse" strangeness, elements skip "awaiting".
+        const sinceAttempt = (Date.now() - collapseLastAttemptTs) / 1000;
+        if (collapseLastAttemptTs && sinceAttempt < CONFIG.collapseMinGapMs / 1000) return;
+
+        // Star gains — the most reliable collapse-benefit signal (see note above).
+        const sg = readStarGains();
+        const hasStarGain = (sg.s0 !== null && sg.s0 > 0) ||
+                            (sg.s1 !== null && sg.s1 > 0) ||
+                            (sg.s2 !== null && sg.s2 > 0);
+
+        // A pending element (#elementN has class "awaiting") only activates ON a collapse.
+        // Self-disabling: with the "elements don't need collapse" strangeness, elements skip
+        // "awaiting" so this trigger naturally becomes inert at strangeness[4][6] ≥ 1.
         const elementPending = CONFIG.collapseOnElement && !!document.querySelector('[id^="element"].awaiting');
+
         let fire = false;
-        if (goalReady) fire = true;
-        else if (elementPending && elapsed >= CONFIG.collapseElementGapMs / 1000) fire = true;
-        else if (boost != null && boost >= CONFIG.collapseBoost) fire = true;
-        else if (elapsed >= CONFIG.collapseMaxWaitMs / 1000 && (boost == null || boost >= CONFIG.collapseMinBoost)) fire = true;
+        let reason = '';
+        if (hasStarGain && elapsed >= CONFIG.collapseMinGapMs / 1000) {
+            fire = true; reason = 'star';
+        } else if (elementPending && elapsed >= CONFIG.collapseElementGapMs / 1000) {
+            fire = true; reason = 'element';
+        } else if (boost != null && boost >= CONFIG.collapseBoost) {
+            fire = true; reason = 'boost';
+        } else if (elapsed >= CONFIG.collapseHardStallMs / 1000) {
+            fire = true; reason = 'hardstall';
+        } else if (elapsed >= CONFIG.collapseMaxWaitMs / 1000 && boost >= CONFIG.collapseMinBoost) {
+            fire = true; reason = 'antihang';
+        }
+
         if (fire) {
             clickIf('reset0Button');
-            collapseLastTs = Date.now();
-            pushLog('💥 collapse' + (goalReady ? ' (goal)' : (elementPending ? ' (element)' : '')) + (boost != null ? ' ' + boost.toFixed(2) + '×' : ''));
+            collapseLastAttemptTs = Date.now();
+            if (reason !== 'antihang' && reason !== 'hardstall') collapseLastTs = Date.now();
+            const gainDetail = hasStarGain ? ` +${[sg.s0,sg.s1,sg.s2].filter(v => v != null && v > 0).join('/')}★` : '';
+            pushLog('💥 collapse (' + reason + ')' + gainDetail + (boost != null ? ' ' + boost.toFixed(2) + '×' : ''));
         }
     }
 
@@ -460,7 +514,7 @@
     function mergeStep() {
         if (!resetReady('reset0Button') || !/merge/i.test(textOf('reset0Button'))) {
             if (!mergeLastTs) mergeLastTs = Date.now();
-            return;
+            return; // keep existing timer — don't reset on DOM flicker (v1.12 fix)
         }
         if (!mergeLastTs) mergeLastTs = Date.now();
         const boost = readNum('#mergeBoostTotal > span');
@@ -516,7 +570,7 @@
             return;
         }
         if (s !== 2 && prevStage === 2) resetVaporTracking(); // left stage 2 — start fresh on return
-        if (s !== 4 && prevStage === 4) collapseLastTs = 0;   // left stage 4 — reset collapse cadence
+        if (s !== 4 && prevStage === 4) { collapseLastTs = 0; collapseLastAttemptTs = 0; } // left stage 4 — reset collapse cadence
         if (s !== 5 && prevStage === 5) mergeLastTs = 0;      // left stage 5 — reset merge cadence
         if (s !== 5 && prevStage === 5) stage5HoldStart = 0;   // left stage 5 — reset stage-reset hold
         if (s !== prevStage && prevStage !== 0) pushLog(`🪐 stage → ${STAGE_NAMES[s] || s}`);
@@ -805,7 +859,7 @@
         el.fbGoal.textContent = textOf('reset0Button') || '\u2014';
         let roiK = 'ROI', roiV = '\u2014';
         if (s === 2) { roiK = 'Vap boost'; const b = readNum('#vaporizationBoostTotal > span'); roiV = b != null ? b.toFixed(2) + '\u00d7' : '\u2014'; }
-        else if (s === 4) { roiK = 'Collapse boost'; const b = readNum('#collapseBoostTotal > span'); roiV = b != null ? b.toFixed(2) + '\u00d7' : '\u2014'; }
+        else if (s === 4) { roiK = 'Collapse'; const b = readNum('#collapseBoostTotal > span'); const sg0 = readNum('#special1Get'); const sg1 = readNum('#special2Get'); const sg2 = readNum('#special3Get'); const sg = [sg0,sg1,sg2].filter(v => v != null && v > 0); roiV = (b != null ? b.toFixed(2) + '\u00d7' : '\u2014') + (sg.length ? ' \u2605' + sg.join('/') : ''); }
         else if (s === 5) { roiK = 'Merge boost'; const b = readNum('#mergeBoostTotal > span'); roiV = b != null ? b.toFixed(2) + '\u00d7' : '\u2014'; }
         el.fbRoiK.textContent = roiK; el.fbRoiV.textContent = roiV;
         const tgt = currentStrangenessTarget();

@@ -1,67 +1,121 @@
-# Fundamental Autoplayer — session handoff
+# Fundamental Autoplayer - session handoff
 
-Pick up here in a new session. Read this first, then `headless/NOTES.md` for deep mechanics.
+Pick up here in a new session. Read this first, then `headless/NOTES.md` and
+`Resources/fundamental-autoplayer-optimization-report.md` for deeper mechanics.
 
 ## What this is
 A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 (https://awwhy.github.io/Fundamental/, source github.com/awWhy/Fundamental).
-- Script: `/Users/spencer/Downloads/Personal/Claude/Fundamental Player/Fundamental.user.js`
-- Repo: https://github.com/ItsMePriddy/fundamental-autoplayer (public). Author = `ItsMePriddy` / `spencer@thepriddys.com`.
-- Install/update (always the same raw URL): `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
-- **Current shipped version: v1.11.7.**
+- Script: `/Users/spencer/Downloads/Personal/Coding/Fundamental Player/Fundamental.user.js`
+- Repo: https://github.com/ItsMePriddy/fundamental-autoplayer
+- Install/update URL: `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
+- Current shipped target: **v1.12.0**.
 
-## TOKEN DISCIPLINE (the user's #1 priority — read this)
-- Do **NOT** use the Chrome MCP / screenshots without asking first — image tokens are the biggest cost. Ask, explain what you need and why.
-- The **headless harness (Node/Bash) is cheap and preferred** for any testing/validation — no browser.
-- For live info, give the user a small console one-liner to paste (DOM-only; game has no globals).
-- Keep responses concise. Bump `@version`, `node --check`, commit, push, and reply with the clickable install link. That's the loop.
+## Token discipline
+- Do **not** use browser screenshots or Chrome tooling without asking first.
+- Prefer the Node/headless harness for validation.
+- For live game state, use small DOM-only console snippets; game internals are not global.
+- Normal ship loop: edit -> bump version -> `node --check` -> commit -> push -> give the raw install link.
 
-## How the bot works (DOM-driven; game is an IIFE with no globals)
-Main loop `tick()` every 250ms: if the tab is hidden, update the HUD and skip game actions; otherwise `acceptOfflineDialog` → `applySettings` (set confirms None, enable game auto-toggles + auto-stage-switch) → `buyEverything` → `fastResets` → (slow cadence) `slowResets` + auto-export → `updateHud`.
-- `activeStage()` reads `#stageWord` text → stage 1-6 (Microworld..Abyss), or `0` if the text is missing/unrecognized. `fastResets()` does nothing for unknown stages.
-- Reset readiness read from button **text** (buttons never get `.disabled`).
+## How the bot works
+Main loop `tick()` every 250ms:
+1. If the tab is hidden, show paused state and skip game actions.
+2. Accept the offline-time dialog if present.
+3. Apply settings: confirmation toggles to `None`, game automation toggles on.
+4. Buy structures/upgrades/strangeness.
+5. Run stage-specific fast reset logic.
+6. On slower cadence, run stage/end resets and auto-export.
+7. Update the HUD.
 
-### Per-stage reset logic (`fastResets` / helpers)
-- **Stage 1 discharge:** spam `reset0Button` (regain always good; label is misleading so don't gate on it).
-- **Stage 2 vaporization:** `vaporizeStep` — fire when `#vaporizationBoostTotal>span` ≥ `vaporizeBoost` (2.25, headless-validated optimum; curve flat 2–3). Adaptive ln(boost)/elapsed mode exists but is WORSE here — leave 'fixed'.
-- **Stage 3 rank:** attempt `reset0Button` (hard-gated by mass + maxRank).
-- **Stage 4 collapse:** `collapseStep` — collapse immediately when `reset0Button` says a collapse goal is ready. Otherwise use the ROI triggers: boost `#collapseBoostTotal>span` ≥ `collapseBoost` (2.5), anti-hang (`collapseMaxWaitMs` 90s @ ≥ `collapseMinBoost` 1.3), and **element-pending trigger** when any `#elementN.awaiting` exists (elements only activate on collapse and their boost isn't in the boost metric). Elements bought each tick via `createAll`.
-- **Stage 5 merge:** `mergeStep` boost-gates `#reset0Button` from `#mergeBoostTotal>span` at `mergeBoost` (2.0) with a 120s anti-hang at `mergeMinBoost` (1.2). `shouldHoldStage5Reset()` avoids stage-resetting out of Intergalactic while Galaxy/Merge work is actionable. Stage 6 nucleation remains off by default via `highStageResets=false`, leaving timing to the game automation.
+The game is bundled as a non-module IIFE, so the bot drives stable DOM controls.
+`activeStage()` reads `#stageWord`; reset readiness is inferred from button text
+except where a stage has custom logic.
 
-### Strangeness (`buyStrangenessSmart`) — shared quark pool
-Game default (`createAllStrangeness`) dumps stage-1 first (bad). Instead:
-1. Always buy `strange3Stage5` (the 1.4× quark-gain multiplier — the only globally-compounding strangeness).
-2. `strangenessTarget` (default `strange7Stage4` = "Elements no longer require Collapse", idx6 max1): while unowned, buy only it + the multiplier and HOLD the rest (save quarks) → it's the next purchase. Releases after `strangenessTargetTimeoutMs` (10min) if it can't be bought. Owned-detection parses the button's "cur/max" text.
-3. Then current-stage-first, then highest→lowest.
+## Per-stage reset logic
+- Stage 1 discharge: click `#reset0Button` continuously. The label can be misleading, but the reset is cheap and beneficial.
+- Stage 2 vaporization: fixed mode, fire when `#vaporizationBoostTotal > span` reaches `vaporizeBoost = 2.25`. Headless sims showed this beats the adaptive rule for Submerged.
+- Stage 3 rank: attempt `#reset0Button`; the game gates it internally.
+- Stage 4 collapse: see the dedicated section below.
+- Stage 5 merge: `mergeStep()` gates merges on `#mergeBoostTotal > span >= 2.0`, with a 120s anti-hang at `>= 1.2`. It preserves its timer through DOM flicker and defers to game automation once merge boost disappears.
+- Stage 6 nucleation: off by default (`highStageResets = false`), leaving timing to the game's automation.
 
-### Export (`tick`) — stage 5+
-Click `#export` every `exportEveryMs` (10s) to claim Strange-quark rewards. Reward rate is proportional to elapsed time (`conversion=min(time/12h,1)`) so cadence-invariant in total — 10s just reinvests continuously vs idle. The save-file download is **suppressed** via a scoped `document.createElement` wrapper active only during the bot's auto-export window (no files saved; reward kept). Manual HUD exports restore the wrapper first, so they still produce a real backup file.
+## Stage 4 collapse model in v1.12.0
+This was retuned from source-level game analysis plus 30-minute headless sims from
+the user's real Interstellar save (58 quarks, 141 nova stars, 39 novas, 33.5 mass,
+`progress.main = 14`).
 
-### UI
-Draggable side panel `#fbHud` with state/stage/uptime/version/resource/ROI/goal/strangeness target, toggle pills, manual save export, and update button. It shows an amber `paused - tab hidden` state while the browser has frozen the game tab. Console API: `window.FundamentalBot` = `{ start, stop, tick, report, cycles, log, CONFIG, exportSave }`. (`log` entries: `💥 collapse (element)` / `📤 export` etc.)
+Key mechanics:
+- `#special1Get`, `#special2Get`, `#special3Get` show `starCheck[0/1/2]`, the most reliable signal that collapse is beneficial.
+- `#collapseBoostTotal` is only a production boost metric and can flatline at `1.000x` when no more buildings can be purchased.
+- The collapse button text often says `Collapse is at X Mass`, so a generic `resetReady()` check is unreliable here.
+- The game silently rejects collapse clicks unless star gain is positive, new collapse mass exceeds current mass, or elements are pending.
 
-## CONFIG knobs (top of the script)
-tickMs, vaporizeMode/vaporizeBoost, collapseBoost/collapseMaxWaitMs/collapseMinBoost, collapseOnElement/collapseElementGapMs, autoExport/exportEveryMs, smartStrangeness, strangenessTarget/strangenessTargetTimeoutMs, highStageResets, verbose.
+Current config:
+- `collapseBoost = 2.0`
+- `collapseMaxWaitMs = 45000`
+- `collapseMinBoost = 1.0`
+- `collapseHardStallMs = 300000`
+- `collapseMinGapMs = 2000`
+- `collapseElementGapMs = 3000`
 
-## Headless harness (`headless/`) — local clone already exists
-`./build.sh` clones the game, guards Main.ts's boot block behind `__HEADLESS__`, compiles TS→CJS to `headless/build/`. `engine.js` runs the REAL logic with timewarp (4h sim < 1s). Scripts: `solve.js`, `sweep.js`, `optimize.js`.
-- **Required quirks:** set `global.offline.active=false` AND call `Special.checkProgress()` each tick, else `progress.main` freezes (stall at stage 3). New-game init: `prepareVacuum(false)` + `updatePlayer(deepClone(playerStart),false)` + `global.paused=false` + `U.stageUpdate()`. Drive with `timeUpdate(step,step)`; buy max with `buyBuilding(i,s,0,false)`.
-- Used to validate vaporization 2.25. Deep mechanics in `headless/NOTES.md`.
+`collapseStep()` uses this priority order:
+1. Star gain: collapse when any `#specialNGet` is positive and the min gap elapsed.
+2. Pending element: collapse when an `#elementN.awaiting` exists and the element gap elapsed.
+3. Strong boost: collapse at `#collapseBoostTotal >= 2.0`.
+4. Hard stall: after 5 minutes since a real collapse-trigger, click unconditionally.
+5. Anti-hang: after 45s at boost `>= 1.0`.
 
-## Local-cloning-for-testing — decision (pros/cons)
-We already clone+run headless, so the answer is "already done." The one upgrade that would make it genuinely useful for CURRENT (stage 4/5) ROI questions: **load the user's real save** into the harness (`updatePlayer(JSON.parse(atob(saveString)))`) so sims start from their actual state instead of a rushed/unrepresentative one.
-- Pros: ground-truth ROI A/B sweeps from real state; token-cheap (Bash summaries); timewarp; no save-clobber; deterministic.
-- Cons: one-time save paste (could be a few KB of the user's tokens); harness maintenance (re-run build.sh if the game updates); DOM-stub edge cases; some debugging risk wiring save-import.
-- Recommendation: worth it ONLY when doing a rigorous tuning pass (e.g., stage-5 merge timing). For incremental heuristic tweaks, the read-source + small-console-snapshot approach we've used is cheaper. Default: keep heuristic; offer save-import-seeded headless sweep when precision is wanted.
+Important timer behavior:
+- Star, element, and strong-boost collapses reset the collapse cadence timer.
+- Anti-hang and hard-stall attempts do **not** reset that timer, because the game may silently reject them.
+- A separate attempt cooldown prevents rapid-fire rejected clicks.
+- If `#collapseBoostTotal` disappears, the game has taken over auto-collapse and the bot defers to it.
 
-## Game state (as of handoff)
-User is **early in Intergalactic (stage 5 / merge loop)**. Does NOT yet have auto-collapse or "elements no longer require collapse" strangeness (hence v1.9.0 element-collapse trigger + v1.9.1 strangenessTarget to grab the latter next).
+HUD behavior:
+- Stage 4 ROI now shows both boost and pending star gains, for example `2.15x ★12/5`.
 
-## Next steps / open optimizations
-1. **Stage 5 (merge) tuning** when it's developed — give merge dedicated logic like collapse (boost from `#mergeBoostTotal>span`); currently relies on game auto (`highStageResets` off).
-2. Stage 6 (nucleation) later.
-3. Optional: save-import in the headless harness for a precise strangeness/collapse/merge ROI sweep from the real save.
-4. Re-tune collapse/strangeness once the "elements no collapse" + auto-collapse strangeness are owned (some triggers self-disable then).
+## Strangeness
+`buyStrangenessSmart()` handles the shared strange-quark pool better than the
+game's stage-1-first default:
+1. Always tries `strange3Stage5`, the globally compounding quark-gain multiplier.
+2. Holds for `strangenessTargets = ['strange6Stage4', 'strange7Stage4']` by default.
+3. Then buys current stage first, followed by highest stage down to lowest.
 
-## Workflow norms
-Per change: edit → bump `@version` → `node --check` → `git commit` (author ItsMePriddy/spencer@thepriddys.com, end body with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`) → `git push` → reply with the clickable raw install link. Tampermonkey sometimes caches updates → tell user to reopen the raw link to force-reinstall.
+The target hold releases only if a target appears locked for longer than
+`strangenessTargetTimeoutMs`; expensive but unlocked targets are worth saving for.
+
+## Export
+On stage 5+, auto-export runs every 10s to claim strange-quark rewards. The
+download is suppressed only for bot-triggered auto-exports; manual exports still
+produce a save backup.
+
+## Headless harness
+`headless/` contains a local clone/build harness for the real game logic.
+- `headless/build.sh` rebuilds the compiled headless game.
+- `headless/engine.js` runs real logic with timewarp.
+- `headless/route_eval.js` and related scripts support route comparisons.
+- `headless/roiprobe.js` was added during the v1.12 collapse investigation.
+
+Known quirks:
+- Set `global.offline.active = false`.
+- Call `Special.checkProgress()` each tick or `progress.main` can freeze.
+- New-game setup uses `prepareVacuum(false)`, `updatePlayer(deepClone(playerStart), false)`, and `global.paused = false`.
+- Drive time with `timeUpdate(step, step)`.
+
+## Validation from v1.12 collapse tuning
+From the user's actual save, 30-minute sims showed:
+- v1.11.7 style, `2.5x / 90s`: 13 collapses, stars `[185,123,82]`, about `0.217 stars/s`.
+- v1.12 tuning, `1.8-2.0x / 30-45s`: 16 collapses, stars `[199,132,89]`, about `0.233 stars/s`.
+
+## Open optimizations
+1. Re-run seeded sims after the user owns the key Stage 4 strangeness upgrades.
+2. Tune Stage 5 merge timing once Intergalactic is more developed.
+3. Tune Stage 6 nucleation later.
+
+## Shipping reminder
+After changes:
+1. Run `node --check Fundamental.user.js`.
+2. Commit with the requested co-author trailer when asked to ship.
+3. Push `main`.
+4. Tell the user to force-reinstall from:
+   `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
