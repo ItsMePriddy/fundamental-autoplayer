@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.11.6
+// @version      1.11.7
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -54,7 +54,7 @@
 (function () {
     'use strict';
 
-    const BOT_VERSION = '1.11.6';
+    const BOT_VERSION = '1.11.7';
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
@@ -103,7 +103,8 @@
         stage5HoldMaxMs: 1200000, // if only basic Stage 5 building work is visible, hold up to 20m
                                 // before allowing a quark loop. Merge-ready/merge-boost states hold
                                 // indefinitely until mergeStep or the game's own automation handles it.
-        collapseBoost: 2.5,     // stage 4: collapse immediately when the production boost
+        collapseBoost: 2.5,     // stage 4: collapse when any collapse goal is ready, or when
+                                // the production boost
                                 // (#collapseBoostTotal) reaches this multiple — a clearly-good
                                 // collapse is always worth taking now rather than waiting out the
                                 // anti-hang timer. Early stage-4 boosts hover low (~1-1.3), so most
@@ -417,9 +418,10 @@
     // ---- Collapse timing (stage 4) -------------------------------------------
     // Collapse is unlike vaporization: elements only unlock ON a collapse and some
     // upgrades are gated behind mass thresholds, so a pure boost gate can stall when
-    // a collapse is exactly what's needed to progress. Dual trigger: fire on a strong
-    // production boost, OR periodically (anti-hang) at a modest boost so collapse-gated
-    // elements / mass-locked upgrades keep unlocking. #collapseBoostTotal disappears
+    // a collapse is exactly what's needed to progress. Fire when the game reports
+    // any collapse goal ready, on a strong production boost, or periodically
+    // (anti-hang) at a modest boost so collapse-gated elements / mass-locked upgrades
+    // keep unlocking. #collapseBoostTotal disappears
     // once the game's own auto-collapse takes over (strangeness lvl 3) — then we leave
     // it to the game. (Elements that are "ready" are auto-bought by the collapse itself.)
     let collapseLastTs = 0;
@@ -428,19 +430,21 @@
         if (!/collapse/i.test(textOf('reset0Button'))) return; // not the collapse reset / not actionable
         const boost = readNum('#collapseBoostTotal > span'); // null when the game auto-handles it
         const elapsed = (Date.now() - collapseLastTs) / 1000;
+        const goalReady = resetReady('reset0Button');
         // A pending element (#elementN has class "awaiting") only activates ON a collapse, and its
         // permanent boost is NOT included in #collapseBoostTotal (elements apply during the reset),
         // so the boost reading understates the true value. Collapse promptly to bank it. Self-
         // disabling: with the "elements don't need collapse" strangeness, elements skip "awaiting".
         const elementPending = CONFIG.collapseOnElement && !!document.querySelector('[id^="element"].awaiting');
         let fire = false;
-        if (elementPending && elapsed >= CONFIG.collapseElementGapMs / 1000) fire = true;
+        if (goalReady) fire = true;
+        else if (elementPending && elapsed >= CONFIG.collapseElementGapMs / 1000) fire = true;
         else if (boost != null && boost >= CONFIG.collapseBoost) fire = true;
         else if (elapsed >= CONFIG.collapseMaxWaitMs / 1000 && (boost == null || boost >= CONFIG.collapseMinBoost)) fire = true;
         if (fire) {
             clickIf('reset0Button');
             collapseLastTs = Date.now();
-            pushLog('💥 collapse' + (elementPending ? ' (element)' : '') + (boost != null ? ' ' + boost.toFixed(2) + '×' : ''));
+            pushLog('💥 collapse' + (goalReady ? ' (goal)' : (elementPending ? ' (element)' : '')) + (boost != null ? ' ' + boost.toFixed(2) + '×' : ''));
         }
     }
 

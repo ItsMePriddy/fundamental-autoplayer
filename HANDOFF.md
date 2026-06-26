@@ -8,7 +8,7 @@ A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 - Script: `/Users/spencer/Downloads/Personal/Claude/Fundamental Player/Fundamental.user.js`
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer (public). Author = `ItsMePriddy` / `spencer@thepriddys.com`.
 - Install/update (always the same raw URL): `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
-- **Current shipped version: v1.11.6.**
+- **Current shipped version: v1.11.7.**
 
 ## TOKEN DISCIPLINE (the user's #1 priority — read this)
 - Do **NOT** use the Chrome MCP / screenshots without asking first — image tokens are the biggest cost. Ask, explain what you need and why.
@@ -25,7 +25,7 @@ Main loop `tick()` every 250ms: if the tab is hidden, update the HUD and skip ga
 - **Stage 1 discharge:** spam `reset0Button` (regain always good; label is misleading so don't gate on it).
 - **Stage 2 vaporization:** `vaporizeStep` — fire when `#vaporizationBoostTotal>span` ≥ `vaporizeBoost` (2.25, headless-validated optimum; curve flat 2–3). Adaptive ln(boost)/elapsed mode exists but is WORSE here — leave 'fixed'.
 - **Stage 3 rank:** attempt `reset0Button` (hard-gated by mass + maxRank).
-- **Stage 4 collapse:** `collapseStep` — dual trigger: boost `#collapseBoostTotal>span` ≥ `collapseBoost` (2.5) OR anti-hang (`collapseMaxWaitMs` 90s @ ≥ `collapseMinBoost` 1.3). PLUS **element-pending trigger**: collapse ASAP when any `#elementN.awaiting` exists (elements only activate on collapse and their boost isn't in the boost metric). Elements bought each tick via `createAll`.
+- **Stage 4 collapse:** `collapseStep` — collapse immediately when `reset0Button` says a collapse goal is ready. Otherwise use the ROI triggers: boost `#collapseBoostTotal>span` ≥ `collapseBoost` (2.5), anti-hang (`collapseMaxWaitMs` 90s @ ≥ `collapseMinBoost` 1.3), and **element-pending trigger** when any `#elementN.awaiting` exists (elements only activate on collapse and their boost isn't in the boost metric). Elements bought each tick via `createAll`.
 - **Stage 5 merge:** `mergeStep` boost-gates `#reset0Button` from `#mergeBoostTotal>span` at `mergeBoost` (2.0) with a 120s anti-hang at `mergeMinBoost` (1.2). `shouldHoldStage5Reset()` avoids stage-resetting out of Intergalactic while Galaxy/Merge work is actionable. Stage 6 nucleation remains off by default via `highStageResets=false`, leaving timing to the game automation.
 
 ### Strangeness (`buyStrangenessSmart`) — shared quark pool
