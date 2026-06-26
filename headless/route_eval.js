@@ -9,7 +9,11 @@ const SP = require("./build/Special");
 
 const { P, player, global, Stage, U, num } = E;
 
-const savePath = process.argv[2] || "/Users/spencer/Downloads/Fundamental, 25.06.2026 14-15-26, Submerged.txt";
+const savePath = process.argv.slice(2).find((a) => !a.startsWith("--"));
+if (!savePath) {
+  console.error('Usage: node headless/route_eval.js "/path/to/Fundamental save.txt" --hours=72 --target=stage5');
+  process.exit(1);
+}
 const arg = (name, fallback) => {
   const found = process.argv.find((a) => a.startsWith(`--${name}=`));
   return found ? found.slice(name.length + 3) : fallback;

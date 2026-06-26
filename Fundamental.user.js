@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.11.5
+// @version      1.11.6
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -19,8 +19,8 @@
  * are reachable from the page's global scope. Everything here is therefore done
  * by clicking the game's real DOM buttons, whose IDs are stable across the UI.
  *
- * Even hidden buttons (on inactive tabs) still fire their click listeners, so we
- * never need to switch tabs to act.
+ * The game clock freezes in hidden/background tabs, so the bot marks the HUD as
+ * paused and skips game actions until the tab is visible again.
  *
  * Strategy:
  *   1. One-time-ish setup (re-checked cheaply every tick, only acts when needed):
@@ -45,16 +45,16 @@
  *
  * IMPORTANT — keep the tab in the FOREGROUND:
  *   Like most idle games, Fundamental advances production on requestAnimationFrame,
- *   which the browser FREEZES while the tab is hidden/backgrounded. The bot keeps
- *   clicking, but the game clock only ticks while its tab is visible. For
- *   continuous play, leave the game in its own focused window/tab. Brief switches
- *   are fine — on return the game grants "offline time" (auto-accepted here).
+ *   which the browser FREEZES while the tab is hidden/backgrounded. The bot now
+ *   pauses its actions and shows "paused - tab hidden" in the HUD until visible.
+ *   For continuous play, leave the game in its own focused window/tab. Brief
+ *   switches are fine — on return the game grants "offline time" (auto-accepted here).
  */
 
 (function () {
     'use strict';
 
-    const BOT_VERSION = '1.11.5';
+    const BOT_VERSION = '1.11.6';
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
@@ -191,7 +191,7 @@
     const activeStage = () => {
         const w = textOf('stageWord').toLowerCase();
         const i = STAGE_WORDS.findIndex((s) => s && w.startsWith(s));
-        return i > 0 ? i : 1;
+        return i > 0 ? i : 0;
     };
 
     // A reset/action button is "ready" if it exists, isn't disabled, and its label
@@ -455,7 +455,7 @@
     let stage5HoldStart = 0;
     function mergeStep() {
         if (!resetReady('reset0Button') || !/merge/i.test(textOf('reset0Button'))) {
-            mergeLastTs = 0;
+            if (!mergeLastTs) mergeLastTs = Date.now();
             return;
         }
         if (!mergeLastTs) mergeLastTs = Date.now();
@@ -506,6 +506,11 @@
     let prevStage = 0;
     function fastResets() {
         const s = activeStage();
+        if (s === 0) {
+            if (prevStage !== 0) pushLog('stage unknown - waiting');
+            prevStage = 0;
+            return;
+        }
         if (s !== 2 && prevStage === 2) resetVaporTracking(); // left stage 2 — start fresh on return
         if (s !== 4 && prevStage === 4) collapseLastTs = 0;   // left stage 4 — reset collapse cadence
         if (s !== 5 && prevStage === 5) mergeLastTs = 0;      // left stage 5 — reset merge cadence
@@ -610,6 +615,10 @@
     function tick() {
         try {
             tickCount++;
+            if (document.hidden) {
+                updateHud();
+                return;
+            }
             acceptOfflineDialog();
             applySettings();
             buyEverything();
@@ -687,6 +696,8 @@
     #fbHead:active{cursor:grabbing;}
     #fbHud .d{width:9px;height:9px;border-radius:50%;background:#4ade80;box-shadow:0 0 9px #4ade80;flex:0 0 auto;animation:fbP 1.5s ease-in-out infinite;}
     #fbHud.off .d{background:#f87171;box-shadow:0 0 9px #f87171;animation:none;}
+    #fbHud.hidden-tab{border-color:rgba(251,191,36,.6);box-shadow:0 10px 30px rgba(0,0,0,.5),0 0 0 1px rgba(251,191,36,.22);}
+    #fbHud.hidden-tab .d{background:#fbbf24;box-shadow:0 0 9px #fbbf24;animation:fbP 1s ease-in-out infinite;}
     @keyframes fbP{0%,100%{opacity:1;}50%{opacity:.35;}}
     #fbHead b{font-weight:700;flex:1;letter-spacing:.2px;font-size:12.5px;color:#eaf2ff;}
     #fbMin{cursor:pointer;color:#9fb6d6;padding:0 6px;border-radius:6px;}
@@ -775,9 +786,11 @@
         if (!hud) return;
         const s = activeStage();
         const sw = $('stageWord');
+        const tabHidden = running && document.hidden;
         hud.classList.toggle('off', !running);
-        el.fbState.textContent = running ? 'running' : 'paused';
-        el.fbState.style.color = running ? '#7fdca0' : '#f0a0a0';
+        hud.classList.toggle('hidden-tab', tabHidden);
+        el.fbState.textContent = tabHidden ? 'paused - tab hidden' : (running ? 'running' : 'paused');
+        el.fbState.style.color = tabHidden ? '#fbbf24' : (running ? '#7fdca0' : '#f0a0a0');
         el.fbUp.textContent = running && startTs ? fmtDur((Date.now() - startTs) / 1000) : '\u2014';
         el.fbStage.textContent = sw ? sw.textContent.trim() : (STAGE_NAMES[s] || '\u2014');
         el.fbVer.textContent = 'v' + BOT_VERSION;

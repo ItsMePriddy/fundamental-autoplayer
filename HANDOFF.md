@@ -8,7 +8,7 @@ A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 - Script: `/Users/spencer/Downloads/Personal/Claude/Fundamental Player/Fundamental.user.js`
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer (public). Author = `ItsMePriddy` / `spencer@thepriddys.com`.
 - Install/update (always the same raw URL): `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
-- **Current shipped version: v1.11.5.**
+- **Current shipped version: v1.11.6.**
 
 ## TOKEN DISCIPLINE (the user's #1 priority — read this)
 - Do **NOT** use the Chrome MCP / screenshots without asking first — image tokens are the biggest cost. Ask, explain what you need and why.
@@ -17,8 +17,8 @@ A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 - Keep responses concise. Bump `@version`, `node --check`, commit, push, and reply with the clickable install link. That's the loop.
 
 ## How the bot works (DOM-driven; game is an IIFE with no globals)
-Main loop `tick()` every 250ms: `acceptOfflineDialog` → `applySettings` (set confirms None, enable game auto-toggles + auto-stage-switch) → `buyEverything` → `fastResets` → (slow cadence) `slowResets` + auto-export → `updateHud`.
-- `activeStage()` reads `#stageWord` text → stage 1-6 (Microworld..Abyss).
+Main loop `tick()` every 250ms: if the tab is hidden, update the HUD and skip game actions; otherwise `acceptOfflineDialog` → `applySettings` (set confirms None, enable game auto-toggles + auto-stage-switch) → `buyEverything` → `fastResets` → (slow cadence) `slowResets` + auto-export → `updateHud`.
+- `activeStage()` reads `#stageWord` text → stage 1-6 (Microworld..Abyss), or `0` if the text is missing/unrecognized. `fastResets()` does nothing for unknown stages.
 - Reset readiness read from button **text** (buttons never get `.disabled`).
 
 ### Per-stage reset logic (`fastResets` / helpers)
@@ -26,7 +26,7 @@ Main loop `tick()` every 250ms: `acceptOfflineDialog` → `applySettings` (set c
 - **Stage 2 vaporization:** `vaporizeStep` — fire when `#vaporizationBoostTotal>span` ≥ `vaporizeBoost` (2.25, headless-validated optimum; curve flat 2–3). Adaptive ln(boost)/elapsed mode exists but is WORSE here — leave 'fixed'.
 - **Stage 3 rank:** attempt `reset0Button` (hard-gated by mass + maxRank).
 - **Stage 4 collapse:** `collapseStep` — dual trigger: boost `#collapseBoostTotal>span` ≥ `collapseBoost` (2.5) OR anti-hang (`collapseMaxWaitMs` 90s @ ≥ `collapseMinBoost` 1.3). PLUS **element-pending trigger**: collapse ASAP when any `#elementN.awaiting` exists (elements only activate on collapse and their boost isn't in the boost metric). Elements bought each tick via `createAll`.
-- **Stage 5 merge / 6 nucleation:** `highStageResets` (default false) → currently rely on the game's own auto-resets. **NOT yet tuned — this is the main next work.**
+- **Stage 5 merge:** `mergeStep` boost-gates `#reset0Button` from `#mergeBoostTotal>span` at `mergeBoost` (2.0) with a 120s anti-hang at `mergeMinBoost` (1.2). `shouldHoldStage5Reset()` avoids stage-resetting out of Intergalactic while Galaxy/Merge work is actionable. Stage 6 nucleation remains off by default via `highStageResets=false`, leaving timing to the game automation.
 
 ### Strangeness (`buyStrangenessSmart`) — shared quark pool
 Game default (`createAllStrangeness`) dumps stage-1 first (bad). Instead:
@@ -35,10 +35,10 @@ Game default (`createAllStrangeness`) dumps stage-1 first (bad). Instead:
 3. Then current-stage-first, then highest→lowest.
 
 ### Export (`tick`) — stage 5+
-Click `#export` every `exportEveryMs` (10s) to claim Strange-quark rewards. Reward rate is proportional to elapsed time (`conversion=min(time/12h,1)`) so cadence-invariant in total — 10s just reinvests continuously vs idle. The save-file download is **suppressed** via an `HTMLAnchorElement.prototype.click` override for `data:text/plain` download anchors (no files saved; reward kept). Manual exports are suppressed too — user can still backup via Settings → save console → Copy.
+Click `#export` every `exportEveryMs` (10s) to claim Strange-quark rewards. Reward rate is proportional to elapsed time (`conversion=min(time/12h,1)`) so cadence-invariant in total — 10s just reinvests continuously vs idle. The save-file download is **suppressed** via a scoped `document.createElement` wrapper active only during the bot's auto-export window (no files saved; reward kept). Manual HUD exports restore the wrapper first, so they still produce a real backup file.
 
 ### UI
-Minimal top-center banner `#fbBar` (status/stage/uptime, click to toggle). Console API: `window.FundamentalBot` = `{ start, stop, tick, report, cycles, log, CONFIG }`. (`log` entries: `💥 collapse (element)` / `📤 export` etc.)
+Draggable side panel `#fbHud` with state/stage/uptime/version/resource/ROI/goal/strangeness target, toggle pills, manual save export, and update button. It shows an amber `paused - tab hidden` state while the browser has frozen the game tab. Console API: `window.FundamentalBot` = `{ start, stop, tick, report, cycles, log, CONFIG, exportSave }`. (`log` entries: `💥 collapse (element)` / `📤 export` etc.)
 
 ## CONFIG knobs (top of the script)
 tickMs, vaporizeMode/vaporizeBoost, collapseBoost/collapseMaxWaitMs/collapseMinBoost, collapseOnElement/collapseElementGapMs, autoExport/exportEveryMs, smartStrangeness, strangenessTarget/strangenessTargetTimeoutMs, highStageResets, verbose.

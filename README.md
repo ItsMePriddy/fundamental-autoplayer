@@ -29,10 +29,10 @@ globals):
 ## Important: keep the tab in the foreground
 
 Like most idle games, Fundamental advances production on `requestAnimationFrame`,
-which browsers **freeze for hidden/background tabs**. The bot keeps clicking, but the
-game clock only ticks while its tab is visible. For continuous play, leave the game
-in its own focused window. Brief switches are fine — the game grants offline-time
-catch-up on return (auto-accepted by the script).
+which browsers **freeze for hidden/background tabs**. The bot pauses its actions and
+shows `paused - tab hidden` while the tab is hidden. For continuous play, leave the
+game in its own focused window. Brief switches are fine — the game grants
+offline-time catch-up on return (auto-accepted by the script).
 
 ## License
 
