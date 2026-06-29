@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.12.2
+// @version      1.12.3
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -54,7 +54,7 @@
 (function () {
     'use strict';
 
-    const BOT_VERSION = '1.12.1';
+    const BOT_VERSION = '1.12.3';
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
@@ -82,6 +82,8 @@
                                 // below its running max.
         logCycles: true,        // record each vaporization cycle for tuning/validation.
                                 // Inspect via window.FundamentalBot.report().
+        logCollapses: true,     // record every observed Stage 4 collapse for diagnosis.
+                                // Inspect via window.FundamentalBot.collapseReport().
         highStageResets: false, // stage 6 (nucleation) is a major prestige reset. Leave false to
                                 // let the GAME's auto-resets handle it. (Stages 4/5 — collapse and
                                 // merge — have their own dedicated boost-gated logic below.)
@@ -166,12 +168,23 @@
                                 // away instead of sitting idle. (12h only maxes a SINGLE export.)
         smartStrangeness: true, // route the shared strange-quark pool to the CURRENT stage first,
                                 // then highest->lowest, instead of the game's stage-1-first dump.
-        strangenessTargets: ['strange6Stage4', 'strange7Stage4'],
-                                // buy these strangeness upgrades NEXT, in order, holding others
-                                // while saving quarks. Default = Interstellar Auto Structures first,
-                                // then "Elements no longer require Collapse". Seeded route tests from
-                                // a real Submerged save showed this pair beats default cost-order
-                                // spending for repeated stage-4 pushes.
+        strangenessTargets: ['strange3Stage5', 'strange4Stage5'],
+                                // Critical stage 5 unlocks. Both are also bought
+                                // unconditionally before the target loop — listed
+                                // here as double insurance.
+                                // strange3Stage5 (s5 idx2) = 1.4× quark multiplier
+                                //   (max lvl 2, costs 4+16=20 quarks). Compounds ALL
+                                //   future quark income — highest ROI in the game.
+                                // strange4Stage5 (s5 idx3) = Intergalactic collapse
+                                //   immunity (cost 24 quarks). Enables auto-upgrade
+                                //   in stage 5. Without it, Collapse resets wipe
+                                //   Intergalactic progress — it's a gating unlock.
+                                // After these two are owned (44 quarks total), the
+                                // bot falls through to normal current-stage-first
+                                // buying. Do NOT add strange5Stage5 here — it costs
+                                // 15,600 quarks and would just timeout-hold uselessly.
+                                // Previous targets (strange6Stage4, strange7Stage4)
+                                // are both maxed and no longer purchasable.
         strangenessTarget: null, // legacy single-target override; use strangenessTargets above.
         strangenessTargetTimeoutMs: 600000, // stop holding after 10 min if it can't be bought
                                 // because it appears locked. Expensive-but-unlocked targets are held
@@ -478,6 +491,10 @@
     // (strangeness[4][4] ≥ 3) — then we leave timing to the game entirely.
     let collapseLastTs = 0;
     let collapseLastAttemptTs = 0;
+    let collapseObservedMass = null;
+    let collapseLastProjectedMass = null;
+    let collapseN = 0;
+    const collapseLog = [];
     function readStarGains() {
         return {
             s0: readNum('#special1Get'),
@@ -485,9 +502,90 @@
             s2: readNum('#special3Get'),
         };
     }
+    const collapseRatio = (projectedMass, bankedMass) =>
+        projectedMass != null && bankedMass != null && bankedMass > 0
+            ? projectedMass / bankedMass
+            : null;
+    const fmtMass = (value) => value == null
+        ? '?'
+        : Number(value).toLocaleString('en-US', { maximumSignificantDigits: 8 });
+    function recordCollapse(data) {
+        if (!CONFIG.logCollapses) return;
+        const rec = {
+            n: ++collapseN,
+            time: new Date().toISOString(),
+            source: data.source,
+            accepted: data.accepted,
+            reason: data.reason,
+            bankedMassBefore: data.bankedMassBefore,
+            projectedMass: data.projectedMass,
+            projectedRatio: collapseRatio(data.projectedMass, data.bankedMassBefore),
+            bankedMassAfter: data.bankedMassAfter,
+            elapsedSec: data.elapsedSec == null ? null : +data.elapsedSec.toFixed(2),
+            boost: data.boost,
+            starGain0: data.starGains?.[0] ?? null,
+            starGain1: data.starGains?.[1] ?? null,
+            starGain2: data.starGains?.[2] ?? null,
+            pendingElements: data.pendingElements ?? null,
+        };
+        collapseLog.push(rec);
+        if (collapseLog.length > 500) collapseLog.shift();
+        const ratioText = rec.projectedRatio == null ? '?' : rec.projectedRatio.toFixed(4) + '×';
+        const status = rec.accepted ? 'accepted' : 'rejected';
+        console.log(
+            `[Fundamental] collapse #${rec.n} ${status} (${rec.source}/${rec.reason}): ` +
+            `banked ${fmtMass(rec.bankedMassBefore)} M☉ → projected ${fmtMass(rec.projectedMass)} M☉ ` +
+            `(${ratioText}) → banked ${fmtMass(rec.bankedMassAfter)} M☉`,
+            rec
+        );
+    }
+    const collapseReport = () => {
+        if (!collapseLog.length) {
+            console.log('[Fundamental] no Stage 4 collapses logged yet');
+            return null;
+        }
+        const accepted = collapseLog.filter((r) => r.accepted);
+        const ratios = accepted.map((r) => r.projectedRatio).filter((v) => Number.isFinite(v));
+        const summary = {
+            records: collapseLog.length,
+            accepted: accepted.length,
+            rejected: collapseLog.length - accepted.length,
+            scriptRecords: collapseLog.filter((r) => r.source === 'script').length,
+            gameAutoRecords: collapseLog.filter((r) => r.source === 'game-auto').length,
+            minProjectedRatio: ratios.length ? Math.min(...ratios) : null,
+            meanProjectedRatio: ratios.length ? ratios.reduce((sum, v) => sum + v, 0) / ratios.length : null,
+            maxProjectedRatio: ratios.length ? Math.max(...ratios) : null,
+        };
+        console.log('[Fundamental] collapse summary:', summary);
+        console.table(collapseLog);
+        return { summary, collapses: collapseLog.slice() };
+    };
     function collapseStep() {
         if (!collapseLastTs) collapseLastTs = Date.now();
         if (!/collapse/i.test(textOf('reset0Button'))) return; // not the collapse reset / not actionable
+        const currentMass = readNum('#solarMassStat > span');
+        if (collapseObservedMass == null) {
+            collapseObservedMass = currentMass;
+        } else if (currentMass != null && currentMass !== collapseObservedMass) {
+            recordCollapse({
+                source: 'game-auto',
+                accepted: true,
+                reason: 'observed mass change',
+                bankedMassBefore: collapseObservedMass,
+                projectedMass: collapseLastProjectedMass,
+                bankedMassAfter: currentMass,
+                elapsedSec: null,
+                boost: null,
+                starGains: null,
+                pendingElements: document.querySelectorAll('[id^="element"].awaiting').length,
+            });
+            collapseObservedMass = currentMass;
+        }
+        // Keep the latest projected value even when the game has taken over
+        // auto-collapse and hidden its boost stat. If banked mass changes between
+        // ticks, this is the closest pre-collapse projection the DOM exposed.
+        const newMass = numFromText(textOf('reset0Button'));
+        collapseLastProjectedMass = newMass;
         const boost = readNum('#collapseBoostTotal > span'); // null when the game auto-handles it
         if (boost == null) return;
         const elapsed = (Date.now() - collapseLastTs) / 1000;
@@ -495,9 +593,6 @@
         if (collapseLastAttemptTs && sinceAttempt < CONFIG.collapseMinGapMs / 1000) return;
 
         // Projected mass comes from the button; banked mass is a separate stat.
-        const newMass = numFromText(textOf('reset0Button'));
-        const currentMass = readNum('#solarMassStat > span');
-
         // Star gains
         const sg = readStarGains();
         const hasStarGain = (sg.s0 !== null && sg.s0 > 0) ||
@@ -560,6 +655,19 @@
                 collapseLastTs = Date.now();
             }
             // If rejected, keep collapseLastTs so timers continue accumulating.
+            recordCollapse({
+                source: 'script',
+                accepted,
+                reason,
+                bankedMassBefore: currentMass,
+                projectedMass: newMass,
+                bankedMassAfter: postMass,
+                elapsedSec: elapsed,
+                boost,
+                starGains: preStars,
+                pendingElements: prePending,
+            });
+            if (postMass != null) collapseObservedMass = postMass;
 
             const gainDetail = hasStarGain ? ` +${[sg.s0,sg.s1,sg.s2].filter(v => v != null && v > 0).join('/')}★` : '';
             const massDetail = newMass ? ' ' + newMass.toFixed(2) + 'M☉' : '';
@@ -635,7 +743,12 @@
             return;
         }
         if (s !== 2 && prevStage === 2) resetVaporTracking(); // left stage 2 — start fresh on return
-        if (s !== 4 && prevStage === 4) { collapseLastTs = 0; collapseLastAttemptTs = 0; } // left stage 4 — reset collapse cadence
+        if (s !== 4 && prevStage === 4) {
+            collapseLastTs = 0;
+            collapseLastAttemptTs = 0;
+            collapseObservedMass = null;
+            collapseLastProjectedMass = null;
+        } // left stage 4 — reset collapse cadence
         if (s !== 5 && prevStage === 5) mergeLastTs = 0;      // left stage 5 — reset merge cadence
         if (s !== 5 && prevStage === 5) stage5HoldStart = 0;   // left stage 5 — reset stage-reset hold
         if (s !== prevStage && prevStage !== 0) pushLog(`🪐 stage → ${STAGE_NAMES[s] || s}`);
@@ -940,9 +1053,20 @@
         if (!exists('makeAllFooter')) { setTimeout(boot, 500); return; } // wait for game UI
         buildHud();
         // expose manual controls for the console
-        window.FundamentalBot = { start, stop, tick, CONFIG, report, cycles: cycleLog, log: eventLog, exportSave: exportSaveFile };
+        window.FundamentalBot = {
+            start,
+            stop,
+            tick,
+            CONFIG,
+            report,
+            collapseReport,
+            cycles: cycleLog,
+            collapses: collapseLog,
+            log: eventLog,
+            exportSave: exportSaveFile,
+        };
         if (CONFIG.autoStart) start();
-        console.log('[Fundamental] Autoplayer loaded. Use the on-screen HUD or window.FundamentalBot.start()/.stop()/.report().');
+        console.log('[Fundamental] Autoplayer loaded. Collapse telemetry: window.FundamentalBot.collapseReport().');
     }
 
     boot();
