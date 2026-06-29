@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.12.9
+// @version      1.12.10
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -67,7 +67,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.12.9';
+        return '1.12.10';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -119,6 +119,12 @@
         stage5HoldMaxMs: 1200000, // if only basic Stage 5 building work is visible, hold up to 20m
                                 // before allowing a quark loop. Merge-ready/merge-boost states hold
                                 // indefinitely until mergeStep or the game's own automation handles it.
+                                // Quark-stall detection (below) usually releases much sooner.
+        stage5QuarkStallMs: 90000, // release the stage-reset hold when the quark gain displayed
+                                // in reset1Button hasn't grown for this long (90s). When merge
+                                // boost is below 1.2×, quarks only grow via element26 which is
+                                // negligible (~0.02 q/min) — waiting longer just wastes loop time.
+                                // 90s is enough for the initial building-buy phase after re-entry.
         collapseBoost: 2.0,     // stage 4: collapse when the production boost
                                 // (#collapseBoostTotal) reaches this multiple — headless
                                 // simulations from a real Interstellar save (v1.12 tuning pass)
@@ -631,6 +637,30 @@
     // game's own auto-merge, at which point we stop and defer to the game (matching collapse).
     let mergeLastTs = 0;
     let stage5HoldStart = 0;
+    // Quark-stall tracking: quark gain from reset1Button is the actual game
+    // reward for stage-resetting.  When it flatlines (no merges, element26
+    // barely moving), holding longer wastes loop time for negligible gain.
+    let stage5QuarkLastGain = 0;
+    let stage5QuarkLastGrow = 0;
+    function stage5QuarkStalled() {
+        const resetText = textOf('reset1Button');
+        if (!/gain/i.test(resetText)) return false; // "Requirements are met" or no reset available
+        const quarkGain = numFromText(resetText);
+        if (quarkGain === null) return false;
+        // A genuine increase (beyond tiny DOM noise) resets the stall clock
+        if (quarkGain > stage5QuarkLastGain + 0.001) {
+            stage5QuarkLastGain = quarkGain;
+            stage5QuarkLastGrow = Date.now();
+            return false;
+        }
+        // If clock was never started (first reading), seed it now
+        if (!stage5QuarkLastGrow) {
+            stage5QuarkLastGain = quarkGain;
+            stage5QuarkLastGrow = Date.now();
+            return false;
+        }
+        return Date.now() - stage5QuarkLastGrow >= CONFIG.stage5QuarkStallMs;
+    }
     function mergeStep() {
         if (!resetReady('reset0Button') || !/merge/i.test(textOf('reset0Button'))) {
             if (!mergeLastTs) mergeLastTs = Date.now();
@@ -680,6 +710,13 @@
         const mergeBoost = readNum('#mergeBoostTotal > span');
         if (/merge/i.test(textOf('reset0Button')) &&
             (resetReady('reset0Button') || (mergeBoost != null && mergeBoost >= CONFIG.mergeMinBoost))) return true;
+        // Release the hold if quark gain has stopped growing.  When merge boost
+        // is below the anti-hang floor the only quark-gain growth source is
+        // element26, which is negligible — resetting to farm quarks is faster.
+        if (stage5QuarkStalled()) {
+            stage5HoldStart = 0;
+            return false;
+        }
         return Date.now() - stage5HoldStart <= CONFIG.stage5HoldMaxMs;
     }
 
@@ -704,6 +741,10 @@
         } // left stage 4 — reset collapse cadence
         if (s !== 5 && prevStage === 5) mergeLastTs = 0;      // left stage 5 — reset merge cadence
         if (s !== 5 && prevStage === 5) stage5HoldStart = 0;   // left stage 5 — reset stage-reset hold
+        if (s !== 5 && prevStage === 5) {                       // left stage 5 — reset quark-stall tracking
+            stage5QuarkLastGain = 0;
+            stage5QuarkLastGrow = 0;
+        }
         if (s !== prevStage && prevStage !== 0) pushLog(`🪐 stage → ${STAGE_NAMES[s] || s}`);
         prevStage = s;
 
@@ -1210,17 +1251,39 @@
             const target = CONFIG.mergeBoost;
             const progress = boost == null ? null : Math.max(0, Math.min(1, boost / target));
             const actionable = stage5HasUnlockedWork();
+            const quarkGain = numFromText(textOf('reset1Button'));
+            const stallChk = CONFIG.holdStage5WhenActionable ? stage5QuarkStalled() : false;
+            const needMerge = boost != null && boost >= CONFIG.mergeMinBoost;
+            const decision = boost != null && boost >= target
+                ? 'Merge trigger ready'
+                : stallChk
+                    ? 'Quark gain stalled'
+                    : actionable ? 'Growing galaxies' : 'Farming strange quarks';
+            const decisionDetail = stallChk
+                ? `Quark gain (${quarkGain == null ? '?' : quarkGain.toFixed(3)}) hasn't grown for ${(CONFIG.stage5QuarkStallMs/1000).toFixed(0)}s; resetting to farm quarks.`
+                : actionable
+                    ? 'Holding Intergalactic while useful work is available.'
+                    : 'No meaningful Galaxy or Merge work is currently unlocked.';
+            const stallGap = stage5QuarkLastGrow ? ((Date.now() - stage5QuarkLastGrow) / 1000) : 0;
+            const stallDetail = needMerge
+                ? 'Merge boost is above the anti-hang floor'
+                : `Quark gain ${quarkGain == null ? 'not visible' : quarkGain.toFixed(3)}` +
+                  (stallChk ? ' stalled' : stage5QuarkLastGrow ? `· +${stallGap.toFixed(0)}s since last growth` : '');
             return {
-                decision: boost != null && boost >= target ? 'Merge trigger ready' : actionable ? 'Growing galaxies' : 'Farming strange quarks',
-                decisionDetail: actionable ? 'Holding Intergalactic while useful work is available.' : 'No meaningful Galaxy or Merge work is currently unlocked.',
+                decision,
+                decisionDetail,
                 ready: boost != null && boost >= target,
                 heading: 'Intergalactic',
-                metrics: [[resource.label, resource.value], ['Merge boost', boost == null ? 'Game controlled' : `${boost.toFixed(2)}\u00d7`], ['Stage policy', actionable ? 'Hold' : 'Loop']],
+                metrics: [
+                    [resource.label, resource.value],
+                    ['Merge boost', boost == null ? 'Game controlled' : `${boost.toFixed(2)}\u00d7`],
+                    ['Quark gain', quarkGain == null ? 'N/A' : String(quarkGain)],
+                ],
                 progress: progress == null ? null : { label: 'Boost vs. merge target', pct: `${(progress * 100).toFixed(1)}%`, width: progress * 100, left: '1.00\u00d7', current: `${boost.toFixed(2)}\u00d7`, target: `${target.toFixed(2)}\u00d7` },
                 targetLabel: 'Next merge',
                 targetValue: boost == null ? 'Game controlled' : `${target.toFixed(2)}\u00d7 boost`,
                 targetDetail: boost == null ? 'The game has unlocked its own merge automation.' : `+${Math.max(0, target - boost).toFixed(2)}\u00d7 boost needed`,
-                signal: actionable ? 'Stage reset is being held for Intergalactic progress' : 'Stage reset loops remain enabled',
+                signal: stallDetail,
                 lastLabel: 'Last action',
                 lastValue: latestEventText(/merge|stage|export/i),
             };
