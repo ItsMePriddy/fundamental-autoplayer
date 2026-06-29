@@ -9,7 +9,7 @@ A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 - Script: `/Users/spencer/Downloads/Personal/Coding/Fundamental Player/Fundamental.user.js`
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer
 - Install/update URL: `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
-- Current shipped target: **v1.12.8**.
+- Current shipped target: **v1.12.9**.
 
 ## Token discipline
 - Do **not** use browser screenshots or Chrome tooling without asking first.
@@ -152,8 +152,16 @@ From the user's actual save, 30-minute sims showed:
 
 ## Shipping reminder
 After changes:
-1. Run `node --check Fundamental.user.js`.
-2. Commit with the requested co-author trailer when asked to ship.
-3. Push `main`.
-4. Tell the user to force-reinstall from:
+1. Bump the `@version` tag in the userscript header. The HUD, console log, and
+   cache-busted install URL all extract this at runtime via `document.currentScript`
+   — no separate BOT_VERSION constant to sync.
+2. Update `HANDOFF.md` shipped-target line to match.
+3. Run `node --check Fundamental.user.js`.
+4. Commit with the requested co-author trailer when asked to ship.
+5. Push `main`.
+6. Tell the user to force-reinstall from:
    `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
+
+The version extractor in the IIFE has a hardcoded fallback (`'1.12.9'`) used only
+when `document.currentScript` is unavailable; keep it roughly current but the
+`@version` tag is the single source of truth for normal operation.

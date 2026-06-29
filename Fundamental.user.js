@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.12.8
+// @version      1.12.9
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -54,7 +54,21 @@
 (function () {
     'use strict';
 
-    const BOT_VERSION = '1.12.8';
+    // Extract the bot version from the @version userscript header at runtime
+    // so bumping the header tag automatically updates the HUD, console log,
+    // and cache-busted install URL. With @grant none, Tampermonkey injects this
+    // userscript as a <script> element whose textContent is the full source.
+    const BOT_VERSION = (function extractVersion() {
+        try {
+            var cs = document.currentScript;
+            if (cs && cs.textContent) {
+                var m = cs.textContent.match(/@version\s+([\d.]+)/);
+                if (m) return m[1];
+            }
+        } catch (e) { /* fall through to hardcoded fallback */ }
+        // Fallback — keep in sync with @version; used only when extraction fails.
+        return '1.12.9';
+    })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
