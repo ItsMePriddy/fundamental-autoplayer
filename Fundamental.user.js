@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.12.7
+// @version      1.12.8
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -54,7 +54,7 @@
 (function () {
     'use strict';
 
-    const BOT_VERSION = '1.12.7';
+    const BOT_VERSION = '1.12.8';
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
@@ -637,7 +637,12 @@
 
     function stage5HasUnlockedWork() {
         const mergeBoost = readNum('#mergeBoostTotal > span');
-        if (/merge/i.test(textOf('reset0Button')) && (resetReady('reset0Button') || mergeBoost != null)) return true;
+        // Merge is actionable when ready, or when boost is high enough that
+        // waiting for the 2.0× trigger is realistic. At 1.00× (all galaxies
+        // merged, no rebuild underway) the bot can never reach the merge
+        // threshold without a quark-farming loop — don't pretend there's work.
+        if (/merge/i.test(textOf('reset0Button')) &&
+            (resetReady('reset0Button') || (mergeBoost != null && mergeBoost >= CONFIG.mergeMinBoost))) return true;
         for (let i = 1; i <= 4; i++) {
             const name = textOf('building' + i + 'Name');
             const btn = textOf('building' + i + 'Btn');
@@ -659,7 +664,8 @@
         }
         if (!stage5HoldStart) stage5HoldStart = Date.now();
         const mergeBoost = readNum('#mergeBoostTotal > span');
-        if (/merge/i.test(textOf('reset0Button')) && (resetReady('reset0Button') || mergeBoost != null)) return true;
+        if (/merge/i.test(textOf('reset0Button')) &&
+            (resetReady('reset0Button') || (mergeBoost != null && mergeBoost >= CONFIG.mergeMinBoost))) return true;
         return Date.now() - stage5HoldStart <= CONFIG.stage5HoldMaxMs;
     }
 

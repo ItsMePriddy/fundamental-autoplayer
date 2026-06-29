@@ -9,7 +9,7 @@ A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 - Script: `/Users/spencer/Downloads/Personal/Coding/Fundamental Player/Fundamental.user.js`
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer
 - Install/update URL: `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
-- Current shipped target: **v1.12.7**.
+- Current shipped target: **v1.12.8**.
 
 ## Token discipline
 - Do **not** use browser screenshots or Chrome tooling without asking first.
@@ -36,7 +36,7 @@ except where a stage has custom logic.
 - Stage 2 vaporization: fixed mode, fire when `#vaporizationBoostTotal > span` reaches `vaporizeBoost = 2.25`. Headless sims showed this beats the adaptive rule for Submerged.
 - Stage 3 rank: attempt `#reset0Button`; the game gates it internally.
 - Stage 4 collapse: see the dedicated section below.
-- Stage 5 merge: `mergeStep()` gates merges on `#mergeBoostTotal > span >= 2.0`, with a 120s anti-hang at `>= 1.2`. It preserves its timer through DOM flicker and defers to game automation once merge boost disappears.
+- Stage 5 merge: `mergeStep()` gates merges on `#mergeBoostTotal > span >= 2.0`, with a 120s anti-hang at `>= 1.2`. It preserves its timer through DOM flicker and defers to game automation once merge boost disappears. Stage-reset hold is indefinite when merge is ready or boost ≥ 1.2×; when boost is below the anti-hang floor (1.2×) the hold times out after `stage5HoldMaxMs` (20 min) to allow a quark-farming loop.
 - Stage 6 nucleation: off by default (`highStageResets = false`), leaving timing to the game's automation.
 
 ## Stage 4 collapse model in v1.12.6
