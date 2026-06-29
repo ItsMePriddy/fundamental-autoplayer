@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.12.3
+// @version      1.12.4
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -54,7 +54,7 @@
 (function () {
     'use strict';
 
-    const BOT_VERSION = '1.12.3';
+    const BOT_VERSION = '1.12.4';
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
@@ -192,19 +192,6 @@
         verbose: false,         // log every action to console
     };
 
-    const CONFIG_STORAGE_PREFIX = 'fbConfig:';
-    const loadSavedBool = (key) => {
-        try {
-            const saved = localStorage.getItem(CONFIG_STORAGE_PREFIX + key);
-            return saved === null ? CONFIG[key] : saved === '1';
-        } catch (e) {
-            return CONFIG[key];
-        }
-    };
-    CONFIG.autoExport = loadSavedBool('autoExport');
-    CONFIG.smartStrangeness = loadSavedBool('smartStrangeness');
-    CONFIG.collapseOnElement = loadSavedBool('collapseOnElement');
-
     // Text on a reset button that means "not ready yet".
     const NOT_READY = /requires|next goal|reach|need|self[- ]?made|locked|unlock|to unlock/i;
 
@@ -284,23 +271,6 @@
         eventLog.push({ t: Date.now(), msg });
         if (eventLog.length > 60) eventLog.shift();
     };
-    function setConfigFlag(key, value) {
-        CONFIG[key] = !!value;
-        try { localStorage.setItem(CONFIG_STORAGE_PREFIX + key, CONFIG[key] ? '1' : '0'); } catch (e) { /* ignore */ }
-        pushLog(`${key} ${CONFIG[key] ? 'ON' : 'OFF'}`);
-        if (key === 'autoExport' && !CONFIG[key]) {
-            suppressNextDownload = false;
-            if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
-            suppressDownloadTimer = null;
-            restoreExportDownloadSuppressor();
-            lastExport = Date.now();
-        } else if (key === 'smartStrangeness' && !CONFIG[key]) {
-            strangeTargetStart = 0;
-        } else if (key === 'collapseOnElement' && !CONFIG[key]) {
-            collapseLastTs = Date.now();
-        }
-        updateHud();
-    }
     const STAGE_NAMES = ['', 'Microworld', 'Submerged', 'Accretion', 'Interstellar', 'Intergalactic', 'Abyss'];
     const fmtDur = (s) => {
         s = Math.max(0, Math.floor(s));
@@ -844,8 +814,31 @@
     }
 
     function openUpdateUrl() {
-        window.open(UPDATE_URL, '_blank', 'noopener,noreferrer');
-        pushLog('Opened update page');
+        const cacheBustedUrl = `${UPDATE_URL}?v=${encodeURIComponent(BOT_VERSION)}&t=${Date.now()}`;
+        window.open(cacheBustedUrl, '_blank', 'noopener,noreferrer');
+        pushLog('Opened latest script installer');
+    }
+
+    async function copyCollapseLog() {
+        const payload = {
+            version: BOT_VERSION,
+            copiedAt: new Date().toISOString(),
+            collapses: collapseLog.slice(),
+        };
+        try {
+            await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+            pushLog('📋 collapse log copied');
+            const button = $('fbCopyBtn');
+            if (button) {
+                const oldText = button.querySelector('span')?.textContent;
+                const label = button.querySelector('span');
+                if (label) label.textContent = 'Copied';
+                setTimeout(() => { if (label) label.textContent = oldText || 'Copy log'; }, 1200);
+            }
+        } catch (error) {
+            console.error('[Fundamental] could not copy collapse log', error);
+            pushLog('Could not copy collapse log');
+        }
     }
 
     function tick() {
@@ -922,39 +915,79 @@
     const el = {}; // cached field elements
 
     const HUD_CSS = `
-    #fbHud{position:fixed;top:12px;right:12px;z-index:2147483600;width:238px;font-family:'Inter',system-ui,sans-serif;
-        font-size:12px;color:#e8edf6;user-select:none;border-radius:14px;overflow:hidden;
-        background:linear-gradient(165deg,rgba(20,18,34,.93),rgba(10,11,20,.96));
-        border:1px solid rgba(120,170,255,.28);backdrop-filter:blur(12px);box-shadow:0 10px 30px rgba(0,0,0,.5);}
+    #fbHud{--fb-cyan:#58d9ee;--fb-blue:#2c8ae8;--fb-amber:#f5b642;--fb-green:#4ade80;--fb-red:#fb7185;
+        position:fixed;top:16px;right:16px;z-index:2147483600;width:310px;max-height:calc(100vh - 32px);
+        font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+        font-size:12px;line-height:1.4;color:#edf5ff;user-select:none;border-radius:16px;overflow:hidden;
+        background:#07111f;border:1px solid rgba(88,217,238,.55);
+        box-shadow:0 18px 48px rgba(0,0,0,.58),0 0 0 1px rgba(44,138,232,.08);}
     #fbHud.min #fbBody{display:none;}
-    #fbHead{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:grab;
-        background:linear-gradient(90deg,rgba(120,150,255,.18),transparent 70%);border-bottom:1px solid rgba(255,255,255,.07);}
+    #fbHead{display:grid;grid-template-columns:30px minmax(0,1fr) auto;align-items:center;gap:9px;padding:11px 12px;
+        cursor:grab;background:#091626;border-bottom:1px solid rgba(88,217,238,.2);}
     #fbHead:active{cursor:grabbing;}
-    #fbHud .d{width:9px;height:9px;border-radius:50%;background:#4ade80;box-shadow:0 0 9px #4ade80;flex:0 0 auto;animation:fbP 1.5s ease-in-out infinite;}
-    #fbHud.off .d{background:#f87171;box-shadow:0 0 9px #f87171;animation:none;}
-    #fbHud.hidden-tab{border-color:rgba(251,191,36,.6);box-shadow:0 10px 30px rgba(0,0,0,.5),0 0 0 1px rgba(251,191,36,.22);}
-    #fbHud.hidden-tab .d{background:#fbbf24;box-shadow:0 0 9px #fbbf24;animation:fbP 1s ease-in-out infinite;}
+    .fb-logo{width:28px;height:28px;color:var(--fb-cyan);filter:drop-shadow(0 0 5px rgba(88,217,238,.28));}
+    .fb-brand{min-width:0;}
+    .fb-brand-line{display:flex;align-items:center;gap:7px;min-width:0;}
+    .fb-brand b{font-size:13.5px;line-height:1.15;letter-spacing:.1px;color:#f7fbff;white-space:nowrap;}
+    .fb-head-state{display:inline-flex;align-items:center;gap:5px;color:#7ee5a1;font-size:10px;font-weight:700;white-space:nowrap;}
+    .fb-head-state::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--fb-green);
+        box-shadow:0 0 7px rgba(74,222,128,.7);animation:fbP 1.6s ease-in-out infinite;}
+    #fbHud.off .fb-head-state{color:#fda4af;}
+    #fbHud.off .fb-head-state::before{background:var(--fb-red);box-shadow:none;animation:none;}
+    #fbHud.hidden-tab{border-color:rgba(245,182,66,.72);}
+    #fbHud.hidden-tab .fb-head-state{color:#f8cb72;}
+    #fbHud.hidden-tab .fb-head-state::before{background:var(--fb-amber);box-shadow:0 0 7px rgba(245,182,66,.65);}
     @keyframes fbP{0%,100%{opacity:1;}50%{opacity:.35;}}
-    #fbHead b{font-weight:700;flex:1;letter-spacing:.2px;font-size:12.5px;color:#eaf2ff;}
-    #fbMin{cursor:pointer;color:#9fb6d6;padding:0 6px;border-radius:6px;}
-    #fbMin:hover{color:#fff;background:rgba(255,255,255,.1);}
-    #fbBody{padding:10px 12px 12px;display:flex;flex-direction:column;gap:8px;}
-    .fb-t{font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:#7fa8d8;opacity:.85;margin-bottom:1px;}
-    .fb-r{display:flex;justify-content:space-between;gap:8px;align-items:baseline;}
-    .fb-k{color:#9fb6d6;flex:0 0 auto;}
-    .fb-v{color:#fff;font-weight:600;text-align:right;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums;}
-    .fb-sep{height:1px;background:rgba(255,255,255,.08);margin:2px 0;}
-    .fb-tg{display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:3px 0;}
-    .fb-tg:hover .fb-k{color:#cfe0ff;}
-    .fb-pill{font-size:9.5px;font-weight:700;letter-spacing:.5px;padding:2px 10px;border-radius:20px;}
-    .fb-pill.on{background:rgba(74,222,128,.16);color:#7fdca0;border:1px solid rgba(74,222,128,.35);}
-    .fb-pill.off{background:rgba(248,113,113,.12);color:#f0a0a0;border:1px solid rgba(248,113,113,.3);}
-    .fb-btn{margin-top:4px;text-align:center;cursor:pointer;padding:7px;border-radius:9px;font-size:11.5px;font-weight:600;
-        color:#cfe0ff;background:rgba(120,170,255,.1);border:1px solid rgba(120,170,255,.3);}
-    .fb-btn:hover{background:rgba(120,170,255,.22);color:#fff;}
+    .fb-head-meta{margin-top:2px;color:#7690aa;font-size:9.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    #fbMin{display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:8px;color:#a9c1d8;
+        background:transparent;cursor:pointer;}
+    #fbMin:hover{color:#fff;background:rgba(88,217,238,.1);}
+    #fbMin svg{width:15px;height:15px;transition:transform .18s ease;}
+    #fbHud.min #fbMin svg{transform:rotate(180deg);}
+    #fbBody{padding:12px;overflow:auto;display:flex;flex-direction:column;gap:11px;}
+    .fb-section{padding-bottom:11px;border-bottom:1px solid rgba(88,217,238,.16);}
+    .fb-eyebrow{margin-bottom:5px;font-size:9px;line-height:1.2;font-weight:800;letter-spacing:1.35px;
+        text-transform:uppercase;color:#5dcbe3;}
+    .fb-stage{font-size:11px;font-weight:750;letter-spacing:1.2px;color:#b9cce0;text-transform:uppercase;}
+    .fb-decision{margin-top:1px;font-size:22px;line-height:1.1;font-weight:760;letter-spacing:-.35px;color:var(--fb-cyan);}
+    .fb-decision.ready{color:var(--fb-green);}
+    .fb-decision.paused{color:var(--fb-amber);}
+    .fb-detail{margin-top:5px;color:#9db1c7;font-size:11px;line-height:1.35;}
+    .fb-metrics{display:grid;gap:5px;}
+    .fb-metric{display:flex;align-items:baseline;justify-content:space-between;gap:12px;}
+    .fb-metric-label{color:#9db1c7;}
+    .fb-metric-value{min-width:0;color:#f5f9ff;font-weight:680;text-align:right;font-variant-numeric:tabular-nums;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    #fbProgressWrap[hidden]{display:none;}
+    .fb-progress-head{display:flex;justify-content:space-between;gap:8px;margin-top:9px;color:#8399b0;font-size:9.5px;}
+    .fb-progress-head strong{color:var(--fb-amber);font-weight:720;font-variant-numeric:tabular-nums;}
+    .fb-progress{height:5px;margin-top:5px;border-radius:999px;overflow:hidden;background:#162538;border:1px solid #2b4058;}
+    .fb-progress>span{display:block;width:0;height:100%;border-radius:inherit;background:var(--fb-cyan);transition:width .25s ease;}
+    .fb-progress-values{display:flex;justify-content:space-between;gap:8px;margin-top:4px;font-size:9px;color:#70879e;
+        font-variant-numeric:tabular-nums;}
+    .fb-progress-values span:nth-child(2){color:#84e6f1;}
+    .fb-progress-values span:last-child{color:#f5bd58;text-align:right;}
+    .fb-target-value{font-size:20px;line-height:1.2;font-weight:760;color:var(--fb-amber);font-variant-numeric:tabular-nums;}
+    .fb-target-value.ready{color:var(--fb-green);}
+    .fb-signal{margin-top:8px;padding-top:8px;border-top:1px solid rgba(88,217,238,.12);color:#94a9bf;font-size:10px;}
+    .fb-last-value{color:#c8d7e8;font-size:11px;line-height:1.35;white-space:normal;}
+    .fb-actions{display:grid;gap:8px;}
+    .fb-primary,.fb-utility{font:inherit;border:0;cursor:pointer;}
+    .fb-primary{width:100%;padding:9px 12px;border-radius:9px;color:#fff;font-size:11.5px;font-weight:760;
+        background:#1767b6;border:1px solid #3399ed;box-shadow:inset 0 1px 0 rgba(255,255,255,.12);}
+    .fb-primary:hover{background:#2177cc;}
+    #fbHud.off .fb-primary{background:#17653d;border-color:#39b86d;}
+    #fbHud.off .fb-primary:hover{background:#1c7a49;}
+    .fb-utility-row{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+    .fb-utility{display:flex;align-items:center;justify-content:center;gap:6px;min-width:0;padding:7px 5px;border-radius:8px;
+        color:#77d9ea;background:transparent;font-size:10px;}
+    .fb-utility:hover{color:#fff;background:rgba(88,217,238,.09);}
+    .fb-utility svg{width:14px;height:14px;flex:0 0 auto;}
+    #fbUpdateBtn{justify-self:center;padding:4px 7px;color:#7894ad;text-decoration:underline;text-underline-offset:3px;}
+    #fbUpdateBtn:hover{color:#9fe8f4;background:transparent;}
+    @media(max-width:600px){#fbHud{top:8px;right:8px;width:min(310px,calc(100vw - 16px));max-height:calc(100vh - 16px);}}
+    @media(prefers-reduced-motion:reduce){#fbHud *{animation:none!important;transition:none!important;}}
     `;
-
-    const setPill = (elm, on) => { elm.textContent = on ? 'ON' : 'OFF'; elm.className = 'fb-pill ' + (on ? 'on' : 'off'); };
 
     function buildHud() {
         const style = document.createElement('style');
@@ -963,35 +996,90 @@
         hud = document.createElement('div');
         hud.id = 'fbHud';
         hud.innerHTML = `
-            <div id="fbHead"><span class="d"></span><b>\u269b Fundamental Bot</b><span id="fbMin" title="Collapse / expand">\u25be</span></div>
+            <div id="fbHead">
+                <svg class="fb-logo" viewBox="0 0 32 32" aria-hidden="true">
+                    <circle cx="16" cy="16" r="2.5" fill="currentColor"/>
+                    <ellipse cx="16" cy="16" rx="13" ry="5.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+                    <ellipse cx="16" cy="16" rx="13" ry="5.5" fill="none" stroke="currentColor" stroke-width="1.6" transform="rotate(60 16 16)"/>
+                    <ellipse cx="16" cy="16" rx="13" ry="5.5" fill="none" stroke="currentColor" stroke-width="1.6" transform="rotate(120 16 16)"/>
+                </svg>
+                <div class="fb-brand">
+                    <div class="fb-brand-line"><b>Fundamental Pilot</b><span class="fb-head-state" id="fbHeadState">\u2014</span></div>
+                    <div class="fb-head-meta" id="fbHeadMeta">\u2014</div>
+                </div>
+                <button id="fbMin" type="button" title="Collapse panel" aria-label="Collapse panel" aria-expanded="true">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 10.5 8 5.5l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+            </div>
             <div id="fbBody">
-                <div class="fb-r"><span class="fb-k">State</span><span class="fb-v" id="fbState">\u2014</span></div>
-                <div class="fb-r"><span class="fb-k">Uptime</span><span class="fb-v" id="fbUp">\u2014</span></div>
-                <div class="fb-r"><span class="fb-k">Stage</span><span class="fb-v" id="fbStage">\u2014</span></div>
-                <div class="fb-r"><span class="fb-k">Version</span><span class="fb-v" id="fbVer">\u2014</span></div>
-                <div class="fb-r"><span class="fb-k" id="fbResK">Resource</span><span class="fb-v" id="fbResV">\u2014</span></div>
-                <div class="fb-r"><span class="fb-k" id="fbRoiK">ROI</span><span class="fb-v" id="fbRoiV">\u2014</span></div>
-                <div class="fb-r"><span class="fb-k">Goal</span><span class="fb-v" id="fbGoal">\u2014</span></div>
-                <div class="fb-r"><span class="fb-k">Strange tgt</span><span class="fb-v" id="fbTgt">\u2014</span></div>
-                <div class="fb-sep"></div>
-                <div class="fb-t">Toggles</div>
-                <div class="fb-tg" id="fbTgScript"><span class="fb-k">Script</span><span class="fb-pill" id="fbPScript">\u2014</span></div>
-                <div class="fb-tg" id="fbTgExport"><span class="fb-k">Auto-export</span><span class="fb-pill" id="fbPExport">\u2014</span></div>
-                <div class="fb-tg" id="fbTgStrange"><span class="fb-k">Smart strangeness</span><span class="fb-pill" id="fbPStrange">\u2014</span></div>
-                <div class="fb-tg" id="fbTgElem"><span class="fb-k">Collapse on element</span><span class="fb-pill" id="fbPElem">\u2014</span></div>
-                <div class="fb-btn" id="fbExportBtn">\ud83d\udcbe Export save</div>
-                <div class="fb-btn" id="fbUpdateBtn">Update script</div>
+                <section class="fb-section">
+                    <div class="fb-eyebrow">Current decision</div>
+                    <div class="fb-stage" id="fbStage">\u2014</div>
+                    <div class="fb-decision" id="fbDecision">\u2014</div>
+                    <div class="fb-detail" id="fbDecisionDetail">\u2014</div>
+                </section>
+                <section class="fb-section">
+                    <div class="fb-eyebrow" id="fbMetricHeading">Status</div>
+                    <div class="fb-metrics">
+                        <div class="fb-metric"><span class="fb-metric-label" id="fbMetricLabel1">\u2014</span><span class="fb-metric-value" id="fbMetricValue1">\u2014</span></div>
+                        <div class="fb-metric"><span class="fb-metric-label" id="fbMetricLabel2">\u2014</span><span class="fb-metric-value" id="fbMetricValue2">\u2014</span></div>
+                        <div class="fb-metric"><span class="fb-metric-label" id="fbMetricLabel3">\u2014</span><span class="fb-metric-value" id="fbMetricValue3">\u2014</span></div>
+                    </div>
+                    <div id="fbProgressWrap" hidden>
+                        <div class="fb-progress-head"><span id="fbProgressLabel">\u2014</span><strong id="fbProgressPct">\u2014</strong></div>
+                        <div class="fb-progress"><span id="fbProgressBar"></span></div>
+                        <div class="fb-progress-values"><span id="fbProgressLeft">0</span><span id="fbProgressCurrent">\u2014</span><span id="fbProgressTarget">\u2014</span></div>
+                    </div>
+                </section>
+                <section class="fb-section">
+                    <div class="fb-eyebrow" id="fbTargetLabel">Next action</div>
+                    <div class="fb-target-value" id="fbTargetValue">\u2014</div>
+                    <div class="fb-detail" id="fbTargetDetail">\u2014</div>
+                    <div class="fb-signal" id="fbSignal">\u2014</div>
+                </section>
+                <section class="fb-section">
+                    <div class="fb-eyebrow" id="fbLastLabel">Last action</div>
+                    <div class="fb-last-value" id="fbLastValue">\u2014</div>
+                </section>
+                <div class="fb-actions">
+                    <button class="fb-primary" id="fbRunBtn" type="button">Pause script</button>
+                    <div class="fb-utility-row">
+                        <button class="fb-utility" id="fbExportBtn" type="button">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8m0 0 3-3m-3 3L5 7M3 12v2h10v-2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            <span>Export save</span>
+                        </button>
+                        <button class="fb-utility" id="fbCopyBtn" type="button">
+                            <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="4" width="8" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3 11H2.5A1.5 1.5 0 0 1 1 9.5v-7A1.5 1.5 0 0 1 2.5 1h6A1.5 1.5 0 0 1 10 2.5V3" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+                            <span>Copy log</span>
+                        </button>
+                    </div>
+                    <button class="fb-utility" id="fbUpdateBtn" type="button">
+                        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8m0 0 3-3m-3 3L5 7M3 13h10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        <span>Install latest</span>
+                    </button>
+                </div>
             </div>`;
         document.body.appendChild(hud);
-        ['fbState', 'fbUp', 'fbStage', 'fbVer', 'fbResK', 'fbResV', 'fbRoiK', 'fbRoiV', 'fbGoal', 'fbTgt',
-         'fbPScript', 'fbPExport', 'fbPStrange', 'fbPElem'].forEach((id) => { el[id] = $(id); });
-        $('fbMin').onclick = (e) => { e.stopPropagation(); hud.classList.toggle('min'); localStorage.setItem('fbHudMin', hud.classList.contains('min') ? '1' : '0'); };
+        [
+            'fbHeadState', 'fbHeadMeta', 'fbStage', 'fbDecision', 'fbDecisionDetail', 'fbMetricHeading',
+            'fbMetricLabel1', 'fbMetricValue1', 'fbMetricLabel2', 'fbMetricValue2', 'fbMetricLabel3',
+            'fbMetricValue3', 'fbProgressWrap', 'fbProgressLabel', 'fbProgressPct', 'fbProgressBar',
+            'fbProgressLeft', 'fbProgressCurrent', 'fbProgressTarget', 'fbTargetLabel', 'fbTargetValue',
+            'fbTargetDetail', 'fbSignal', 'fbLastLabel', 'fbLastValue', 'fbRunBtn',
+        ].forEach((id) => { el[id] = $(id); });
+        $('fbMin').onclick = (e) => {
+            e.stopPropagation();
+            hud.classList.toggle('min');
+            const minimized = hud.classList.contains('min');
+            $('fbMin').setAttribute('aria-expanded', minimized ? 'false' : 'true');
+            $('fbMin').setAttribute('aria-label', minimized ? 'Expand panel' : 'Collapse panel');
+            localStorage.setItem('fbHudMin', minimized ? '1' : '0');
+        };
         if (localStorage.getItem('fbHudMin') === '1') hud.classList.add('min');
-        $('fbTgScript').onclick = () => (running ? stop() : start());
-        $('fbTgExport').onclick = () => setConfigFlag('autoExport', !CONFIG.autoExport);
-        $('fbTgStrange').onclick = () => setConfigFlag('smartStrangeness', !CONFIG.smartStrangeness);
-        $('fbTgElem').onclick = () => setConfigFlag('collapseOnElement', !CONFIG.collapseOnElement);
+        $('fbMin').setAttribute('aria-expanded', hud.classList.contains('min') ? 'false' : 'true');
+        $('fbRunBtn').onclick = () => (running ? stop() : start());
         $('fbExportBtn').onclick = exportSaveFile;
+        $('fbCopyBtn').onclick = copyCollapseLog;
         $('fbUpdateBtn').onclick = openUpdateUrl;
         const pos = localStorage.getItem('fbHudPos');
         if (pos) { try { const p = JSON.parse(pos); hud.style.left = p.x + 'px'; hud.style.top = p.y + 'px'; hud.style.right = 'auto'; } catch (e) { /* ignore */ } }
@@ -1002,7 +1090,7 @@
     function makeDraggable(handle) {
         let sx, sy, ox, oy, drag = false;
         handle.addEventListener('mousedown', (e) => {
-            if (e.target.id === 'fbMin') return;
+            if (e.target.closest('button,a')) return;
             drag = true; const r = hud.getBoundingClientRect();
             ox = r.left; oy = r.top; sx = e.clientX; sy = e.clientY; hud.style.right = 'auto'; e.preventDefault();
         });
@@ -1018,34 +1106,210 @@
         });
     }
 
+    const fmtHudNumber = (value, digits = 4) => {
+        if (value == null || !Number.isFinite(value)) return '\u2014';
+        const abs = Math.abs(value);
+        if ((abs >= 1e6 || (abs > 0 && abs < 0.001))) return value.toExponential(Math.max(1, digits - 1));
+        return value.toLocaleString('en-US', { maximumSignificantDigits: digits });
+    };
+    const fmtHudMass = (value) => value == null ? '\u2014' : `${fmtHudNumber(value, 6)} M\u2609`;
+    const footerResource = () => {
+        const text = textOf('footerStat1');
+        const colon = text.indexOf(':');
+        return colon >= 0
+            ? { label: text.slice(0, colon).trim() || 'Resource', value: text.slice(colon + 1).trim() || '\u2014' }
+            : { label: 'Resource', value: text || '\u2014' };
+    };
+    const latestEventText = (pattern = null) => {
+        const records = pattern ? eventLog.filter((record) => pattern.test(record.msg)) : eventLog;
+        return records.length ? records[records.length - 1].msg : 'No action recorded this run';
+    };
+    function collapseHudModel() {
+        const currentMass = readNum('#solarMassStat > span');
+        const resetText = textOf('reset0Button');
+        const projectedMass = /collapse/i.test(resetText) ? numFromText(resetText) : null;
+        const ratio = collapseRatio(projectedMass, currentMass);
+        const boost = readNum('#collapseBoostTotal > span');
+        const stars = readStarGains();
+        const starValues = [stars.s0, stars.s1, stars.s2].map((value) => value || 0);
+        const hasStars = starValues.some((value) => value > 0);
+        const pendingElements = document.querySelectorAll('[id^="element"].awaiting').length;
+        const nextUnlock = currentMass == null ? null : CONFIG.collapseMassThresholds.find((value) => value > currentMass);
+        const massCandidates = [];
+        if (currentMass != null && currentMass > 0) {
+            massCandidates.push({ value: currentMass * CONFIG.collapseMassMultiplier, reason: 'ROI' });
+            if (hasStars) massCandidates.push({ value: currentMass * CONFIG.collapseStarMassMin, reason: 'star gain' });
+        }
+        if (nextUnlock != null) massCandidates.push({ value: nextUnlock, reason: 'mass unlock' });
+        massCandidates.sort((a, b) => a.value - b.value);
+        const nextTrigger = massCandidates[0] || null;
+        const thresholdCrossed = nextUnlock != null && projectedMass != null && projectedMass >= nextUnlock;
+        const roiReady = ratio != null && ratio >= CONFIG.collapseMassMultiplier;
+        const starReady = hasStars && ratio != null && ratio >= CONFIG.collapseStarMassMin;
+        const boostReady = boost != null && boost >= CONFIG.collapseBoost;
+        const ready = thresholdCrossed || roiReady || starReady || pendingElements > 0 || boostReady;
+        let decision = 'Building mass';
+        let decisionDetail = 'Waiting for a worthwhile collapse.';
+        if (boost == null) {
+            decision = 'Game auto-collapse';
+            decisionDetail = 'Watching banked mass changes; the script is not clicking collapse.';
+        } else if (ready) {
+            decision = 'Collapse trigger ready';
+            if (thresholdCrossed) decisionDetail = `Projected mass crosses the ${fmtHudMass(nextUnlock)} unlock.`;
+            else if (roiReady) decisionDetail = `Projected mass reached the ${CONFIG.collapseMassMultiplier.toFixed(2)}\u00d7 ROI target.`;
+            else if (starReady) decisionDetail = 'A star gain is ready at the lower mass threshold.';
+            else if (pendingElements > 0) decisionDetail = `${pendingElements} element${pendingElements === 1 ? '' : 's'} awaiting activation.`;
+            else decisionDetail = `Collapse boost reached ${boost.toFixed(2)}\u00d7.`;
+        }
+        const targetValue = nextTrigger ? nextTrigger.value : null;
+        const progress = targetValue && projectedMass != null ? Math.max(0, Math.min(1, projectedMass / targetValue)) : null;
+        const needed = targetValue != null && projectedMass != null ? Math.max(0, targetValue - projectedMass) : null;
+        const last = [...collapseLog].reverse().find((record) => record.accepted);
+        const lastText = last
+            ? `#${last.n} \u00b7 ${fmtHudMass(last.bankedMassBefore)} \u2192 ${fmtHudMass(last.bankedMassAfter)} \u00b7 ${last.reason}`
+            : 'Not observed this run';
+        const signal = pendingElements > 0
+            ? `${pendingElements} element${pendingElements === 1 ? '' : 's'} awaiting activation`
+            : hasStars
+                ? `Star gain pending: +${starValues.join(' / ')}`
+                : 'No star or element trigger pending';
+        return {
+            decision,
+            decisionDetail,
+            ready,
+            heading: 'Mass',
+            metrics: [
+                ['Banked', fmtHudMass(currentMass)],
+                ['Projected', fmtHudMass(projectedMass)],
+                ['ROI', ratio == null ? '\u2014' : `${ratio.toFixed(2)}\u00d7 / ${CONFIG.collapseMassMultiplier.toFixed(2)}\u00d7`],
+            ],
+            progress: progress == null ? null : {
+                label: 'Projected vs. next trigger',
+                pct: `${(progress * 100).toFixed(1)}% of trigger`,
+                width: progress * 100,
+                left: '0 M\u2609',
+                current: fmtHudMass(projectedMass),
+                target: fmtHudMass(targetValue),
+            },
+            targetLabel: boost == null ? 'Collapse owner' : 'Next mass trigger',
+            targetValue: boost == null ? 'Game controlled' : fmtHudMass(targetValue),
+            targetDetail: boost == null
+                ? 'The game has unlocked its own collapse automation.'
+                : needed == null
+                    ? 'Waiting for collapse data.'
+                    : needed > 0
+                        ? `+${fmtHudMass(needed)} projected mass needed for ${nextTrigger?.reason || 'trigger'}`
+                        : `${nextTrigger?.reason || 'Trigger'} condition is met`,
+            signal,
+            lastLabel: 'Last collapse',
+            lastValue: lastText,
+        };
+    }
+    function stageHudModel(stage) {
+        const resource = footerResource();
+        if (stage === 4) return collapseHudModel();
+        if (stage === 2) {
+            const boost = readNum('#vaporizationBoostTotal > span');
+            const target = CONFIG.vaporizeMode === 'fixed' ? CONFIG.vaporizeBoost : CONFIG.vaporizeMinBoost;
+            const progress = boost == null ? null : Math.max(0, Math.min(1, boost / target));
+            return {
+                decision: boost != null && boost >= target ? 'Vaporizing now' : 'Building vapor boost',
+                decisionDetail: CONFIG.vaporizeMode === 'fixed' ? 'Waiting for the fixed high-ROI reset point.' : 'Following the adaptive growth-rate peak.',
+                ready: boost != null && boost >= target,
+                heading: 'Vaporization',
+                metrics: [[resource.label, resource.value], ['Current boost', boost == null ? '\u2014' : `${boost.toFixed(2)}\u00d7`], ['Mode', CONFIG.vaporizeMode]],
+                progress: progress == null ? null : { label: 'Boost vs. reset target', pct: `${(progress * 100).toFixed(1)}%`, width: progress * 100, left: '1.00\u00d7', current: `${boost.toFixed(2)}\u00d7`, target: `${target.toFixed(2)}\u00d7` },
+                targetLabel: 'Next vaporization',
+                targetValue: `${target.toFixed(2)}\u00d7 boost`,
+                targetDetail: boost == null ? 'Waiting for the boost stat.' : `+${Math.max(0, target - boost).toFixed(2)}\u00d7 boost needed`,
+                signal: `Cycle time ${vapLastTs ? fmtDur((Date.now() - vapLastTs) / 1000) : '\u2014'}`,
+                lastLabel: 'Last vaporization',
+                lastValue: latestEventText(/vaporize/i),
+            };
+        }
+        if (stage === 5) {
+            const boost = readNum('#mergeBoostTotal > span');
+            const target = CONFIG.mergeBoost;
+            const progress = boost == null ? null : Math.max(0, Math.min(1, boost / target));
+            const actionable = stage5HasUnlockedWork();
+            return {
+                decision: boost != null && boost >= target ? 'Merge trigger ready' : actionable ? 'Growing galaxies' : 'Farming strange quarks',
+                decisionDetail: actionable ? 'Holding Intergalactic while useful work is available.' : 'No meaningful Galaxy or Merge work is currently unlocked.',
+                ready: boost != null && boost >= target,
+                heading: 'Intergalactic',
+                metrics: [[resource.label, resource.value], ['Merge boost', boost == null ? 'Game controlled' : `${boost.toFixed(2)}\u00d7`], ['Stage policy', actionable ? 'Hold' : 'Loop']],
+                progress: progress == null ? null : { label: 'Boost vs. merge target', pct: `${(progress * 100).toFixed(1)}%`, width: progress * 100, left: '1.00\u00d7', current: `${boost.toFixed(2)}\u00d7`, target: `${target.toFixed(2)}\u00d7` },
+                targetLabel: 'Next merge',
+                targetValue: boost == null ? 'Game controlled' : `${target.toFixed(2)}\u00d7 boost`,
+                targetDetail: boost == null ? 'The game has unlocked its own merge automation.' : `+${Math.max(0, target - boost).toFixed(2)}\u00d7 boost needed`,
+                signal: actionable ? 'Stage reset is being held for Intergalactic progress' : 'Stage reset loops remain enabled',
+                lastLabel: 'Last action',
+                lastValue: latestEventText(/merge|stage|export/i),
+            };
+        }
+        const resetText = textOf('reset0Button');
+        const ready = resetReady('reset0Button');
+        const labels = {
+            1: ['Buying and discharging', 'Keeping the Microworld production loop moving.', 'Discharge check'],
+            3: ['Climbing accretion ranks', 'Buying structures and taking each available rank.', 'Rank requirement'],
+            6: ['Game automation active', 'High-stage resets remain under game control.', 'Reset status'],
+        };
+        const fallback = labels[stage] || ['Reading game state', 'Waiting for a recognized stage.', 'Reset status'];
+        return {
+            decision: fallback[0],
+            decisionDetail: fallback[1],
+            ready,
+            heading: 'Stage status',
+            metrics: [[resource.label, resource.value], ['Reset', ready ? 'Ready' : 'Waiting'], ['Bot uptime', running && startTs ? fmtDur((Date.now() - startTs) / 1000) : '\u2014']],
+            progress: null,
+            targetLabel: fallback[2],
+            targetValue: ready ? 'Ready now' : 'Waiting',
+            targetDetail: resetText || 'No reset information available.',
+            signal: CONFIG.enableGameAutomation ? 'Game automation is enabled' : 'Game automation is disabled',
+            lastLabel: 'Last action',
+            lastValue: latestEventText(),
+        };
+    }
     function updateHud() {
         if (!hud) return;
         const s = activeStage();
-        const sw = $('stageWord');
         const tabHidden = running && document.hidden;
+        const stageName = STAGE_NAMES[s] || 'Unknown stage';
+        const model = stageHudModel(s);
         hud.classList.toggle('off', !running);
         hud.classList.toggle('hidden-tab', tabHidden);
-        el.fbState.textContent = tabHidden ? 'paused - tab hidden' : (running ? 'running' : 'paused');
-        el.fbState.style.color = tabHidden ? '#fbbf24' : (running ? '#7fdca0' : '#f0a0a0');
-        el.fbUp.textContent = running && startTs ? fmtDur((Date.now() - startTs) / 1000) : '\u2014';
-        el.fbStage.textContent = sw ? sw.textContent.trim() : (STAGE_NAMES[s] || '\u2014');
-        el.fbVer.textContent = 'v' + BOT_VERSION;
-        if (sw) el.fbStage.style.color = getComputedStyle(sw).color;
-        const f1 = textOf('footerStat1'); const ci = f1.indexOf(':');
-        el.fbResK.textContent = ci >= 0 ? f1.slice(0, ci).trim() : 'Resource';
-        el.fbResV.textContent = ci >= 0 ? f1.slice(ci + 1).trim() : (f1 || '\u2014');
-        el.fbGoal.textContent = textOf('reset0Button') || '\u2014';
-        let roiK = 'ROI', roiV = '\u2014';
-        if (s === 2) { roiK = 'Vap boost'; const b = readNum('#vaporizationBoostTotal > span'); roiV = b != null ? b.toFixed(2) + '\u00d7' : '\u2014'; }
-        else if (s === 4) { roiK = 'Collapse'; const b = readNum('#collapseBoostTotal > span'); const sg0 = readNum('#special1Get'); const sg1 = readNum('#special2Get'); const sg2 = readNum('#special3Get'); const sg = [sg0,sg1,sg2].filter(v => v != null && v > 0); roiV = (b != null ? b.toFixed(2) + '\u00d7' : '\u2014') + (sg.length ? ' \u2605' + sg.join('/') : ''); }
-        else if (s === 5) { roiK = 'Merge boost'; const b = readNum('#mergeBoostTotal > span'); roiV = b != null ? b.toFixed(2) + '\u00d7' : '\u2014'; }
-        el.fbRoiK.textContent = roiK; el.fbRoiV.textContent = roiV;
-        const tgt = currentStrangenessTarget();
-        el.fbTgt.textContent = tgt ? (($(tgt) && (textOf(tgt).match(/\d[\d.eE+]*\s*\/\s*\d[\d.eE+]*/) || ['\u2014'])[0]) || '\u2014') : 'off';
-        setPill(el.fbPScript, running);
-        setPill(el.fbPExport, CONFIG.autoExport);
-        setPill(el.fbPStrange, CONFIG.smartStrangeness);
-        setPill(el.fbPElem, CONFIG.collapseOnElement);
+        el.fbHeadState.textContent = tabHidden ? 'Tab hidden' : running ? 'Running' : 'Paused';
+        el.fbHeadMeta.textContent = `v${BOT_VERSION} \u00b7 ${stageName}`;
+        el.fbStage.textContent = stageName;
+        el.fbDecision.textContent = tabHidden ? 'Tab is paused' : !running ? 'Script paused' : model.decision;
+        el.fbDecision.className = `fb-decision${tabHidden || !running ? ' paused' : model.ready ? ' ready' : ''}`;
+        el.fbDecisionDetail.textContent = tabHidden
+            ? 'Return this tab to the foreground so the game clock can resume.'
+            : !running
+                ? 'No purchases or resets will be attempted until resumed.'
+                : model.decisionDetail;
+        el.fbMetricHeading.textContent = model.heading;
+        model.metrics.forEach(([label, value], index) => {
+            el['fbMetricLabel' + (index + 1)].textContent = label;
+            el['fbMetricValue' + (index + 1)].textContent = value;
+        });
+        el.fbProgressWrap.hidden = !model.progress;
+        if (model.progress) {
+            el.fbProgressLabel.textContent = model.progress.label;
+            el.fbProgressPct.textContent = model.progress.pct;
+            el.fbProgressBar.style.width = `${model.progress.width}%`;
+            el.fbProgressLeft.textContent = model.progress.left;
+            el.fbProgressCurrent.textContent = model.progress.current;
+            el.fbProgressTarget.textContent = model.progress.target;
+        }
+        el.fbTargetLabel.textContent = model.targetLabel;
+        el.fbTargetValue.textContent = model.targetValue;
+        el.fbTargetValue.className = `fb-target-value${model.ready ? ' ready' : ''}`;
+        el.fbTargetDetail.textContent = model.targetDetail;
+        el.fbSignal.textContent = model.signal;
+        el.fbLastLabel.textContent = model.lastLabel;
+        el.fbLastValue.textContent = model.lastValue;
+        el.fbRunBtn.textContent = running ? 'Pause script' : 'Resume script';
     }
 
     // ---- Boot -----------------------------------------------------------------
@@ -1054,6 +1318,7 @@
         buildHud();
         // expose manual controls for the console
         window.FundamentalBot = {
+            version: BOT_VERSION,
             start,
             stop,
             tick,
@@ -1064,9 +1329,11 @@
             collapses: collapseLog,
             log: eventLog,
             exportSave: exportSaveFile,
+            copyCollapseLog,
+            installLatest: openUpdateUrl,
         };
         if (CONFIG.autoStart) start();
-        console.log('[Fundamental] Autoplayer loaded. Collapse telemetry: window.FundamentalBot.collapseReport().');
+        console.log(`[Fundamental] Autoplayer v${BOT_VERSION} loaded. Collapse telemetry: window.FundamentalBot.collapseReport().`);
     }
 
     boot();

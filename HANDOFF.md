@@ -9,7 +9,7 @@ A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 - Script: `/Users/spencer/Downloads/Personal/Coding/Fundamental Player/Fundamental.user.js`
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer
 - Install/update URL: `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
-- Current shipped target: **v1.12.1**.
+- Current shipped target: **v1.12.4**.
 
 ## Token discipline
 - Do **not** use browser screenshots or Chrome tooling without asking first.
@@ -39,7 +39,7 @@ except where a stage has custom logic.
 - Stage 5 merge: `mergeStep()` gates merges on `#mergeBoostTotal > span >= 2.0`, with a 120s anti-hang at `>= 1.2`. It preserves its timer through DOM flicker and defers to game automation once merge boost disappears.
 - Stage 6 nucleation: off by default (`highStageResets = false`), leaving timing to the game's automation.
 
-## Stage 4 collapse model in v1.12.1
+## Stage 4 collapse model in v1.12.4
 This was retuned from source-level game analysis plus 30-minute headless sims from
 the user's real Interstellar save (58 quarks, 141 nova stars, 39 novas, 33.5 mass,
 `progress.main = 14`). The v1.12.1 update adds mass-threshold gating and an ROI
@@ -86,14 +86,37 @@ Important timer behavior:
 - If `#collapseBoostTotal` disappears, the game has taken over auto-collapse and the bot defers to it.
 
 HUD behavior:
-- Stage 4 ROI now shows both boost and pending star gains, for example `2.15x ★12/5`.
+- The v1.12.4 HUD is a decision-oriented diagnostic panel rather than a generic
+  list of game stats.
+- Stage 4 shows banked mass, projected collapse mass, current/target ROI, progress
+  to the next mass trigger, pending star/element signals, and the last accepted
+  collapse observed this run.
+- The old `Goal` row was removed because the collapse button reports projected
+  mass, not a goal.
+- The old Auto-export, Smart strangeness, and Collapse-on-element toggle controls
+  were removed. Those strategy settings use the script defaults and are no longer
+  silently restored from HUD-local persistence.
+- The only primary control is Pause/Resume. Export save, Copy log, and Install
+  latest are explicit utility actions.
+- Install latest opens a cache-busted raw GitHub URL so Tampermonkey does not reuse
+  stale userscript metadata.
+- Collapse records remain available from
+  `window.FundamentalBot.collapseReport()` or the HUD's Copy log action.
 
 ## Strangeness
 `buyStrangenessSmart()` handles the shared strange-quark pool better than the
 game's stage-1-first default:
-1. Always tries `strange3Stage5`, the globally compounding quark-gain multiplier.
-2. Holds for `strangenessTargets = ['strange6Stage4', 'strange7Stage4']` by default.
-3. Then buys current stage first, followed by highest stage down to lowest.
+1. Always tries `strange3Stage5`, the globally compounding quark-gain multiplier (1.4× per level, max 2).
+2. If `strangenessTargets` has an unowned target, holds all other purchases to save quarks for it.
+3. Then buys `strange4Stage5` (Intergalactic collapse immunity).
+4. Then buys current stage first, followed by highest stage down to lowest.
+
+Current targets (v1.12): `['strange3Stage5', 'strange4Stage5']`
+- Both are also bought unconditionally before the target loop; listed as double insurance.
+- strange3Stage5 = 1.4× quark multiplier (max lvl 2, costs 4+16=20 quarks)
+- strange4Stage5 = Intergalactic collapse immunity (cost 24 quarks)
+- After these are owned (44 quarks total), normal current-stage-first buying resumes.
+- strange5Stage5 is intentionally NOT listed — it costs 15,600 quarks and would timeout-hold pointlessly.
 
 The target hold releases only if a target appears locked for longer than
 `strangenessTargetTimeoutMs`; expensive but unlocked targets are worth saving for.

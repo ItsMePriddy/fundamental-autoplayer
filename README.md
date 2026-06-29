@@ -10,9 +10,15 @@ A [Tampermonkey](https://www.tampermonkey.net/) userscript that automatically pl
    **https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js**
 3. Open / refresh https://awwhy.github.io/Fundamental/ — it auto-starts.
 
-A **▶ Auto: ON/OFF** button appears bottom-right. You can also control it from the
+The **Fundamental Pilot** panel appears over the game. It explains the bot's current
+decision, shows stage-specific reset progress, and provides working Pause/Resume,
+Export save, Copy log, and Install latest actions. You can also control it from the
 console via `window.FundamentalBot.start()` / `.stop()`, and tune the `CONFIG` block
 at the top of the script.
+
+In Stage 4, the panel separates banked mass from projected collapse mass, shows the
+current ROI against its trigger, and reports the next mass threshold plus the last
+observed collapse. This avoids presenting projected mass as a misleading "goal."
 
 ## What it does
 
