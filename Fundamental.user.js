@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.12.11
+// @version      1.12.12
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -67,7 +67,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.12.11';
+        return '1.12.12';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -116,9 +116,6 @@
                                 // work is visible. Early Stage 5 can be mostly locked; in that case
                                 // resetting to farm quarks is still correct. Once Galaxies/Merges
                                 // are real, holding preserves compounding Stage 5 progress.
-        stage5HoldMaxMs: 1200000, // absolute safety net: release hold after 20 min no matter what.
-                                // Only reached when the merge gate and grace period somehow don't
-                                // apply — a last-resort escape hatch.
         stage5HoldGraceMs: 60000, // when merge boost is below the anti-hang floor (1.2×), hold
                                 // this long for initial building buy-up after entering the stage,
                                 // then release to farm quarks. Quark gain cannot grow meaningfully
@@ -689,7 +686,7 @@
         // Merge boost is below the anti-hang floor: quark gain can only grow
         // via element26, which is negligible.  Hold for a short grace period
         // for initial building buy-up, then release to farm quarks via stage
-        // reset.  The absolute safety net (stage5HoldMaxMs) still applies.
+        // reset.
         return Date.now() - stage5HoldStart <= CONFIG.stage5HoldGraceMs;
     }
 
