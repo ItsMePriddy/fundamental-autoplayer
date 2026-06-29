@@ -16,10 +16,10 @@ Export save, Copy log, and Install latest actions. You can also control it from 
 console via `window.FundamentalBot.start()` / `.stop()`, and tune the `CONFIG` block
 at the top of the script.
 
-In Stage 4, the panel identifies projected raw collapse mass separately from the
-game's visible mass-effect gain, shows that gain against its trigger, and reports
-the last observed collapse. This avoids presenting projected mass as a misleading
-"goal" or mislabeling the game's effect-ratio stat as banked mass.
+In Stage 4, the panel shows banked raw mass, projected raw collapse mass, and their
+true ROI ratio against its trigger, plus the last observed collapse. Pending star
+remnants are shown as immediately actionable because the game accepts star-only
+collapses without requiring a mass increase.
 
 ## What it does
 
