@@ -9,7 +9,7 @@ A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 - Script: `/Users/spencer/Downloads/Personal/Coding/Fundamental Player/Fundamental.user.js`
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer
 - Install/update URL: `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
-- Current shipped target: **v1.12.4**.
+- Current shipped target: **v1.12.5**.
 
 ## Token discipline
 - Do **not** use browser screenshots or Chrome tooling without asking first.
@@ -39,7 +39,7 @@ except where a stage has custom logic.
 - Stage 5 merge: `mergeStep()` gates merges on `#mergeBoostTotal > span >= 2.0`, with a 120s anti-hang at `>= 1.2`. It preserves its timer through DOM flicker and defers to game automation once merge boost disappears.
 - Stage 6 nucleation: off by default (`highStageResets = false`), leaving timing to the game's automation.
 
-## Stage 4 collapse model in v1.12.4
+## Stage 4 collapse model in v1.12.5
 This was retuned from source-level game analysis plus 30-minute headless sims from
 the user's real Interstellar save (58 quarks, 141 nova stars, 39 novas, 33.5 mass,
 `progress.main = 14`). The v1.12.1 update adds mass-threshold gating and an ROI
@@ -47,10 +47,13 @@ multiplier heuristic to prevent collapsing for negligible mass gains.
 
 Key mechanics:
 - `#special1Get`, `#special2Get`, `#special3Get` show `starCheck[0/1/2]`, the most reliable signal that collapse is beneficial.
-- `#collapseBoostTotal` is only a production boost metric and can flatline at `1.000x` when no more buildings can be purchased.
-- The collapse button shows projected newMass: `Collapse is at X Mass`; `#solarMassStat > span` shows the banked currentMass used for threshold and ROI comparisons.
+- The collapse button shows projected raw `newMass`: `Collapse is at X Mass`.
+- The current raw banked mass is **not exposed in the DOM**.
+- `#solarMassEffect > span` shows the current transformed mass effect.
+- `#solarMassStat > span` shows the projected/current mass-effect ratio
+  (`calculateEffects.mass(true) / calculateEffects.mass()`), not banked mass.
+- `#collapseBoostTotal` is the total projected production boost and can flatline at `1.000x`.
 - The game silently rejects collapse clicks unless star gain is positive, new collapse mass exceeds current mass, or elements are pending.
-- **Mass thresholds**: The game unlocks new buildings/upgrades/researches at specific solar masses (unlockB/unlockU/unlockR in collapseInfo). Collapsing right when crossing a threshold unlocks new content immediately.
 
 Current config (empirically optimized from 3-agent sweep):
 - `collapseBoost = 2.0`
@@ -59,10 +62,9 @@ Current config (empirically optimized from 3-agent sweep):
 - `collapseHardStallMs = 300000`
 - `collapseMinGapMs = 2000`
 - `collapseElementGapMs = 3000`
-- `collapseMassMultiplier = 1.3` — ROI trigger: empirically optimal from 600s headless sweep
-- `collapseStarMassMin = 1.15` — star trigger floor: slightly lower than ROI
-- `collapseAntihangMassMin = 1.3` — antihang floor: matches primary ROI (never undercuts it)
-- `collapseMassThresholds = [0.01235, 0.076, 0.18, 0.23, 0.3, 0.8, 1.3, 10, 40, 1000]`
+- `collapseMassEffectMultiplier = 1.054` — visible effect-ratio equivalent of the validated 1.3× raw-mass target (`1.3^0.2`)
+- `collapseStarMassEffectMin = 1.028` — visible effect-ratio equivalent of the 1.15× raw-mass star floor (`1.15^0.2`)
+- `collapseAntihangMassEffectMin = 1.054` — anti-hang never undercuts primary ROI
 
 Headless validation (user's 467.6-mass save, 600s sims):
 - **1.3× mass-only**: 7 collapses, 199 stars, **0.332 stars/s** — 6× faster than anti-hang
@@ -71,25 +73,25 @@ Headless validation (user's 467.6-mass save, 600s sims):
 - **Anti-hang 60s (no mass floor)**: 10 collapses, 33 stars, 0.055 stars/s — anti-hang was the bottleneck
 
 `collapseStep()` uses this priority order:
-1. **Mass threshold**: newMass crosses an unlock threshold that currentMass hasn't reached yet
-2. **ROI multiplier**: newMass ≥ currentMass × `collapseMassMultiplier` (1.3 = 30% mass increase)
-3. **Star-gain with mass floor**: stars available AND newMass ≥ currentMass × `collapseStarMassMin` (1.15 = 15% increase)
-4. **Element pending**: an `#elementN.awaiting` exists and element gap elapsed
-5. **Strong boost**: `#collapseBoostTotal ≥ 2.0`
-6. **Hard stall**: after 5 minutes since last accepted collapse, click unconditionally
-7. **Anti-hang**: after 2 min at boost ≥ 1.0 AND newMass ≥ currentMass × `collapseAntihangMassMin` (1.1 = 10% increase). This is a safety net, not the primary driver — headless data proved the anti-hang at 45s was the performance bottleneck (0.055 vs 0.332 stars/s).
+1. **Mass-effect ROI**: `#solarMassStat ≥ collapseMassEffectMultiplier`
+2. **Star-gain floor**: stars available AND `#solarMassStat ≥ collapseStarMassEffectMin`
+3. **Element pending**: an `#elementN.awaiting` exists and element gap elapsed
+4. **Strong boost**: `#collapseBoostTotal ≥ 2.0`
+5. **Hard stall**: after 5 minutes since last accepted collapse, click unconditionally
+6. **Anti-hang**: after 2 min at total boost ≥ 1.0 AND `#solarMassStat ≥ collapseAntihangMassEffectMin`
 
 Important timer behavior:
-- After clicking, the bot verifies that banked mass, pending star gains, or pending elements changed before treating the collapse as accepted.
+- After clicking, the bot verifies that the visible mass effect, pending star gains,
+  or pending elements changed before treating the collapse as accepted.
 - If none changed, the collapse was silently rejected → keep `collapseLastTs` intact so timers continue accumulating.
 - Collapse cadence resets when leaving/re-entering stage 4.
 - If `#collapseBoostTotal` disappears, the game has taken over auto-collapse and the bot defers to it.
 
 HUD behavior:
-- The v1.12.4 HUD is a decision-oriented diagnostic panel rather than a generic
+- The v1.12.5 HUD is a decision-oriented diagnostic panel rather than a generic
   list of game stats.
-- Stage 4 shows banked mass, projected collapse mass, current/target ROI, progress
-  to the next mass trigger, pending star/element signals, and the last accepted
+- Stage 4 shows projected raw collapse mass, current mass effect, projected mass
+  gain against its target, pending star/element signals, and the last accepted
   collapse observed this run.
 - The old `Goal` row was removed because the collapse button reports projected
   mass, not a goal.

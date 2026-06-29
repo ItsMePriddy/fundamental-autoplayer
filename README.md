@@ -16,9 +16,10 @@ Export save, Copy log, and Install latest actions. You can also control it from 
 console via `window.FundamentalBot.start()` / `.stop()`, and tune the `CONFIG` block
 at the top of the script.
 
-In Stage 4, the panel separates banked mass from projected collapse mass, shows the
-current ROI against its trigger, and reports the next mass threshold plus the last
-observed collapse. This avoids presenting projected mass as a misleading "goal."
+In Stage 4, the panel identifies projected raw collapse mass separately from the
+game's visible mass-effect gain, shows that gain against its trigger, and reports
+the last observed collapse. This avoids presenting projected mass as a misleading
+"goal" or mislabeling the game's effect-ratio stat as banked mass.
 
 ## What it does
 
