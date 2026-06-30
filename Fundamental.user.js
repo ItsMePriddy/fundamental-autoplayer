@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.12.13
+// @version      1.12.14
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -67,7 +67,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.12.13';
+        return '1.12.14';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -195,7 +195,7 @@
     };
 
     // Text on a reset button that means "not ready yet".
-    const NOT_READY = /requires|next goal|reach|need|self[- ]?made|locked|unlock|to unlock/i;
+    const NOT_READY = /requires|next (?:goal|rank)|reach|need|self[- ]?made|locked|unlock|to unlock/i;
 
     // ---- Helpers --------------------------------------------------------------
     const $ = (id) => document.getElementById(id);
