@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.12.12
+// @version      1.12.13
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -67,7 +67,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.12.12';
+        return '1.12.13';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -91,6 +91,10 @@
                                 // multiple. ~2.25 was the empirical optimum for Submerged; the
                                 // game's default of 2 is essentially as good. Higher (5+) is
                                 // slower (too few resets).
+        vaporizeMinGapMs: 3000, // fixed mode: minimum time since last vaporization before
+                                // firing again. Prevents rapid-fire loops where the bot
+                                // rebuilds engines in 1-2 ticks and immediately crosses the
+                                // boost threshold again before clouds have meaningfully accumulated.
         vaporizeMinBoost: 1.5,  // adaptive only: never fire below this boost.
         vaporizePeakDrop: 0.05, // adaptive only: fire once ln(boost)/elapsed drops this fraction
                                 // below its running max.
@@ -398,7 +402,8 @@
         if (boost === null) return;
 
         if (CONFIG.vaporizeMode === 'fixed') {
-            if (boost >= CONFIG.vaporizeBoost) doVaporize(boost);
+            const elapsed = (Date.now() - vapLastTs) / 1000;
+            if (elapsed >= CONFIG.vaporizeMinGapMs / 1000 && boost >= CONFIG.vaporizeBoost) doVaporize(boost);
             return;
         }
 

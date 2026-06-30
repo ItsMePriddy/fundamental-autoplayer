@@ -9,7 +9,7 @@ A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 - Script: `/Users/spencer/Downloads/Personal/Coding/Fundamental Player/Fundamental.user.js`
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer
 - Install/update URL: `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
-- Current shipped target: **v1.12.12**.
+- Current shipped target: **v1.12.13**.
 
 ## Token discipline
 - Do **not** use browser screenshots or Chrome tooling without asking first.
@@ -33,7 +33,7 @@ except where a stage has custom logic.
 
 ## Per-stage reset logic
 - Stage 1 discharge: click `#reset0Button` continuously. The label can be misleading, but the reset is cheap and beneficial.
-- Stage 2 vaporization: fixed mode, fire when `#vaporizationBoostTotal > span` reaches `vaporizeBoost = 2.25`. Headless sims showed this beats the adaptive rule for Submerged.
+- Stage 2 vaporization: fixed mode, fire when `#vaporizationBoostTotal > span` reaches `vaporizeBoost = 2.25`, with a `vaporizeMinGapMs = 3000` (3s) cooldown to prevent rapid-fire loops. Headless sims showed this beats the adaptive rule for Submerged.
 - Stage 3 rank: attempt `#reset0Button`; the game gates it internally.
 - Stage 4 collapse: see the dedicated section below.
 - Stage 5 merge: `mergeStep()` gates merges on `#mergeBoostTotal > span >= 2.0`, with a 120s anti-hang at `>= 1.2`. It preserves its timer through DOM flicker and defers to game automation once merge boost disappears. Stage-reset hold is indefinite when merge is ready or boost ≥ 1.2×; when boost is below the anti-hang floor (1.2×) the hold uses a short grace period (`stage5HoldGraceMs`, 60s) for initial building buy-up, then releases to farm quarks — quark gain cannot grow meaningfully without merges.
@@ -162,6 +162,6 @@ After changes:
 6. Tell the user to force-reinstall from:
    `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
 
-The version extractor in the IIFE has a hardcoded fallback (`'1.12.12'`) used only
+The version extractor in the IIFE has a hardcoded fallback (`'1.12.13'`) used only
 when `document.currentScript` is unavailable; keep it roughly current but the
 `@version` tag is the single source of truth for normal operation.
