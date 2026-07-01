@@ -8,27 +8,30 @@ simulates in well under a second.
 `build.sh` clones the game, guards only its browser "Start everything" boot block
 behind a `__HEADLESS__` flag (keeping all state init + exports), and compiles the
 TypeScript to CommonJS in `./build`. `_globals.js` stubs the browser globals
-(`document`, `localStorage`, …) before the modules load. `engine.js` then:
-1. requires the compiled `Main`/`Player`/`Stage`/`Update`,
-2. runs the real new-game init (`prepareVacuum(false)` + `updatePlayer(...)`),
-3. drives play via the real `timeUpdate(step, step)` + `buyBuilding`/`buyUpgrades`/
-   `vaporizationResetUser`/etc., exactly as the userscript does through the DOM.
+(`document`, `localStorage`, …) before the modules load. `engine.js` then exposes:
+- `newGame()` + `buyBuildings`/`buyUpgrades`/`buyStrange` — the real
+  `prepareVacuum`/`updatePlayer`/`buyBuilding`/etc. calls, exactly as the
+  userscript drives them through the DOM.
+- `vaporBoost()` / `mergeBoost()` — reimplementations of the exact expressions
+  the game uses to fill `#vaporizationBoostTotal` / `#mergeBoostTotal`, built by
+  calling the same `Stage.calculateEffects.*` functions rather than
+  hand-deriving the formulas, so they can't drift from the game's own math.
 
 ## Run
 ```
-./build.sh           # one-time (clones + compiles game)
-node sweep.js        # time-to-target sweep over vaporize thresholds
-node optimize.js     # clouds-after-fixed-duration comparison
+./build.sh                        # one-time (clones + compiles game)
+node sweep.js                     # run every built-in strategy against the
+                                   # newest save in Resources/saves/, print a
+                                   # comparison table (one child process per
+                                   # strategy — in-process looping OOMs)
+node sweep.js shipped             # run just one strategy (see its header for
+                                   # the full list + flags: --save, --simHours,
+                                   # --seconds, and ad-hoc --collapseMult=X /
+                                   # --vapBoost=X overrides)
+node grid-sweep.js --axis=collapseMult   # wide single-axis parameter sweep,
+                                   # log-spaced values, ranked by quarks/sim-hour
 ```
-
-## Key finding (Submerged / vaporization timing)
-Optimizing time-to-cloud-target across policies:
-- **Fixed boost ~2.25 is optimal**, and the curve is **flat across 2–3** (<6% spread).
-  High thresholds (5/10/30) are slower (too few resets); <2 is slower (too many).
-- The **adaptive `ln(boost)/elapsed` rule underperforms badly** for Submerged: the
-  large cloud divisor + effect softcap make boost crawl, so the ratio peaks at a
-  worthless ~1.05 and it fires hundreds of tiny resets. Removed as the default.
-- Time-to-target is dominated by the initial grind to ~1e10 drops (the cloud cost
-  divisor), so vaporize timing is a second-order effect here.
-
-The userscript therefore uses `vaporizeMode:'fixed'`, `vaporizeBoost:2.25`.
+See `sweep.js`'s header comment for the full usage and the built-in strategy
+table. It loads a real save via `updatePlayer(json, true)` rather than starting
+fresh (`newGame()`), since the questions worth validating are almost always
+about mid-to-late-game behavior.

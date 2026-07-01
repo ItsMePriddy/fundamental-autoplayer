@@ -58,8 +58,9 @@ highest satisfied (top-down), so reaching `current>=N` can skip the development 
   `toggleAuto0..11`, `toggleVerse0`, `toggleNormal0`, `toggleConfirm0..7` (Safe→None→All), `stageSwitch1..6`.
 
 ## Status
-- Full-game headless deep-solve is PAUSED (user decision, token budget). Stage 4+ to be tuned via
-  the live browser when reached, using the boost-gate pattern (`#collapseBoostTotal`) + optional
-  one-time headless seed from a pasted real-state snapshot.
-- Active workstream: per-stage UI dashboard overlay (see plan file).
-- Headless build is reproducible via `./build.sh`; `solve.js` carries the offline+checkProgress fixes.
+- The headless build is reproducible via `./build.sh`; `engine.js` carries the
+  offline-flag + `checkProgress` fixes documented above.
+- `sweep.js` is the canonical validation tool (see `headless/README.md`) — it
+  loads a real save and compares named CONFIG-threshold strategies against each
+  other, using `engine.js`'s `vaporBoost()`/`mergeBoost()` helpers so the sweep
+  can't silently drift from what the DOM actually shows in-game.

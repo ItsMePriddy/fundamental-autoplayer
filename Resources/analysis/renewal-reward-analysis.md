@@ -1,5 +1,14 @@
 # Renewal-Reward Analysis: Optimal Collapse Mass Multiplier for Fundamental Stage 4
 
+> **Status: superseded by empirical data.** This is a from-first-principles theoretical
+> derivation predicting an optimal collapse multiplier of 50-150x. Later headless sweeps
+> against real saves (see `headless/sweep.js`) found the empirical optimum is **1.3x** —
+> off by roughly two orders of magnitude — and that's what's shipped
+> (`collapseMassMultiplier` in `Fundamental.user.js`). The gap is unresolved; the likely
+> cause is that this model treats each collapse as an isolated cold-start cycle, while in
+> practice permanent stars/mass carry over between collapses and change the dynamics.
+> Kept for its derivations (mass-gain formula, building-cost structure), not its conclusion.
+
 > **Date**: June 26, 2026  
 > **Game state**: 33.5 Solar mass, 141 nova stars, 39 novas, 0 black holes, 11 elements, 58 strange quarks, progress.main = 14
 
