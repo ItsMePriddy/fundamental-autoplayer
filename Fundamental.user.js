@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.12.15
+// @version      1.13.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -67,7 +67,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.12.15';
+        return '1.13.0';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -127,19 +127,19 @@
                                 // mergeInfo.galaxies+1, which only increments on merge).
         collapseBoost: 2.0,     // stage 4: collapse when the production boost
                                 // (#collapseBoostTotal) reaches this multiple — headless
-                                // simulations from a real Interstellar save (v1.12 tuning pass)
-                                // show the optimum is 1.8-2.0 (was 2.5). The star-gain trigger
-                                // below handles most collapses; this boost gate catches the
-                                // high-value ones the star trigger might miss during rapid growth.
-        collapseMaxWaitMs: 120000, // anti-hang timer: 2 minutes (was 45s). Headless data shows
-                                // the anti-hang should be a safety net, not the primary driver.
-                                // At 45s it dominated all sweeps, producing 0.055 stars/s;
+                                // simulations from a real Interstellar save show the optimum is
+                                // 1.8-2.0. The star-gain trigger below handles most collapses;
+                                // this boost gate catches the high-value ones the star trigger
+                                // might miss during rapid growth.
+        collapseMaxWaitMs: 120000, // anti-hang timer: 2 minutes. Headless data shows the anti-hang
+                                // should be a safety net, not the primary driver — a short (45s)
+                                // timer dominates all sweeps and produces a worse 0.055 stars/s;
                                 // at 120s with a 1.1× floor, it only catches what the primary
                                 // 1.3× ROI trigger missed.
-        collapseMinBoost: 1.0,  // floor for the anti-hang collapse — lowered from 1.3 to 1.0 so
-                                // the anti-hang can fire even when boost is flatlined (no buildings
-                                // purchasable → boost stays 1.0). The game's own collapseResetCheck
-                                // still prevents worthless collapses (it rejects when starCheck=0
+        collapseMinBoost: 1.0,  // floor for the anti-hang collapse — kept low so the anti-hang can
+                                // fire even when boost is flatlined (no buildings purchasable ->
+                                // boost stays 1.0). The game's own collapseResetCheck still
+                                // prevents worthless collapses (it rejects when starCheck=0
                                 // AND newMass≤currentMass AND no pending elements).
         collapseHardStallMs: 300000, // hard-stall breaker: fire an unconditional collapse after
                                 // 5 minutes without ANY collapse, regardless of boost. This breaks
@@ -191,6 +191,24 @@
         strangenessTargetTimeoutMs: 600000, // stop holding after 10 min if it can't be bought
                                 // because it appears locked. Expensive-but-unlocked targets are held
                                 // indefinitely; spending around them was slower in seeded tests.
+        configureNativeAutomation: true, // once "Automatic Vaporization"/"Automatic Collapse"
+                                // strangeness is owned, the GAME's own timeUpdate() already calls
+                                // its internal vaporizationResetCheck()/collapseResetCheck() every
+                                // tick — completely independent of this script — using whatever is
+                                // in the #vaporizationInput/#collapseInput settings fields as its
+                                // threshold. Those default to 3x/2x and are never touched unless a
+                                // player edits them by hand, so left alone the native auto-system
+                                // silently runs on an untuned number. Set them from CONFIG once
+                                // available so whichever system fires — native or this script's own
+                                // polling below, which keeps running unchanged alongside it — uses
+                                // the same threshold. UNITS MATTER here: #vaporizationInput is the
+                                // same boost ratio as #vaporizationBoostTotal (-> vaporizeBoost),
+                                // but #collapseInput is compared against the PRODUCTION-BOOST
+                                // formula (#collapseBoostTotal), NOT the raw projected/banked mass
+                                // ratio — so it maps to collapseBoost, never collapseMassMultiplier.
+                                // (Source-verified against the compiled game; see
+                                // headless/build/Stage.js vaporizationResetCheck/collapseResetCheck
+                                // and Main.js's #vaporizationInput/#collapseInput 'change' handlers.)
         verbose: false,         // log every action to console
     };
 
@@ -305,6 +323,45 @@
         }
     }
 
+    // ---- Native automation handoff ---------------------------------------------
+    // #toggleVaporizationHotkey / #toggleCollapseHotkey are only shown once the
+    // matching "Automatic Vaporization"/"Automatic Collapse" strangeness is owned
+    // (verified: their .style.display toggle is driven by strangeness[2][4]>=1 /
+    // strangeness[4][4]>=1 respectively) — a DOM-observable proxy for a value this
+    // script has no direct access to. Once true, set the native threshold input
+    // once; idempotent (skips if already at target) so a later manual edit by the
+    // player isn't fought.
+    const nativeConfigured = { vaporize: false, collapse: false };
+    function setNativeInput(id, target) {
+        const el = $(id);
+        if (!el) return false;
+        const current = numFromText(el.value);
+        if (current !== null && Math.abs(current - target) < 1e-9) return true; // already set
+        el.value = String(target);
+        el.dispatchEvent(new Event('change'));
+        return true;
+    }
+    function configureNativeAutomation() {
+        if (!CONFIG.configureNativeAutomation) return;
+        if (!nativeConfigured.vaporize) {
+            const hotkey = $('toggleVaporizationHotkey');
+            if (hotkey && hotkey.style.display !== 'none') {
+                nativeConfigured.vaporize = setNativeInput('vaporizationInput', CONFIG.vaporizeBoost);
+                if (nativeConfigured.vaporize) pushLog(`⚙️ native auto-vaporize set to ${CONFIG.vaporizeBoost}×`);
+            }
+        }
+        if (!nativeConfigured.collapse) {
+            const hotkey = $('toggleCollapseHotkey');
+            if (hotkey && hotkey.style.display !== 'none') {
+                // collapseBoost, NOT collapseMassMultiplier: the game compares this input
+                // against the production-boost ratio (#collapseBoostTotal), and 1.3 in
+                // boost units would collapse far too eagerly.
+                nativeConfigured.collapse = setNativeInput('collapseInput', CONFIG.collapseBoost);
+                if (nativeConfigured.collapse) pushLog(`⚙️ native auto-collapse set to ${CONFIG.collapseBoost}× boost`);
+            }
+        }
+    }
+
     // ---- Buying pass ----------------------------------------------------------
     function buyEverything() {
         clickIf('makeAllFooter');       // all structures (active stage)
@@ -323,13 +380,11 @@
     // which multiplies ALL future quark income — buy it before anything else. strange4Stage5
     // (Intergalactic collapse-immunity + enables Upgrade automatization there) is the next key
     // unlock. Everything else is local/automation and is well-served by current-stage-first below.
-    // strangenessTargets: upgrades to buy NEXT — the bot HOLDS other strangeness so quarks
-    // accumulate for the first unowned target. Default route buys Interstellar Auto Structures
-    // before "Elements no longer require Collapse"; seeded tests from a real Submerged save showed
-    // that getting stage-4 structures automated first speeds repeated Interstellar pushes. Resumes
-    // normal buying once targets are owned. A timeout only releases a target if it appears locked;
-    // expensive-but-unlocked route targets are worth saving for. The quark-gain multiplier is always
-    // pursued.
+    // strangenessTargets: upgrades to buy NEXT — the bot HOLDS all other strangeness so quarks
+    // accumulate for the first unowned target, then resumes normal buying once every target is
+    // owned. A timeout only releases a target if it appears locked; expensive-but-unlocked route
+    // targets are worth saving for. The quark-gain multiplier (strange3Stage5) is always pursued
+    // outside this mechanism, regardless of what's in the list.
     let strangeTargetStart = 0;
     function strangeUnowned(id) {
         const m = textOf(id).match(/(\d[\d.eE+]*)\s*\/\s*(\d[\d.eE+]*)/);
@@ -641,7 +696,7 @@
     function mergeStep() {
         if (!resetReady('reset0Button') || !/merge/i.test(textOf('reset0Button'))) {
             if (!mergeLastTs) mergeLastTs = Date.now();
-            return; // keep existing timer — don't reset on DOM flicker (v1.12 fix)
+            return; // keep existing timer — don't reset on DOM flicker
         }
         if (!mergeLastTs) mergeLastTs = Date.now();
         const boost = readNum('#mergeBoostTotal > span');
@@ -845,6 +900,7 @@
             }
             acceptOfflineDialog();
             applySettings();
+            configureNativeAutomation();
             buyEverything();
             fastResets();
             const now = Date.now();
