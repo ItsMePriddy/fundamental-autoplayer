@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.13.1
+// @version      1.13.2
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -30,11 +30,12 @@
  *          toggleVerse0) and auto-stage-switch (toggleNormal0). These do nothing
  *          until the matching "strangeness" upgrades are bought, at which point the
  *          game auto-runs that part for us optimally.
- *   2. Every tick:
+ *   2. Every tick (resets BEFORE purchases — see the comment in tick(); buying
+ *      first let stage 2 vaporize on a stale, inflated boost reading):
+ *        - discharge / vaporize / .. -> #reset0Button (when ready)
  *        - buy all structures        -> #makeAllFooter
  *        - buy all upgrades/research -> #createAllFooter
  *        - buy all strangeness       -> #createAllStrangeness
- *        - discharge / vaporize / .. -> #reset0Button (when ready)
  *   3. On a slower cadence: attempt stage reset (#reset1Button) and end reset
  *      (#reset2Button) when their button text says they're ready.
  *   4. Auto-accept the "offline time" dialog that pops up whenever the tab
@@ -67,7 +68,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.13.1';
+        return '1.13.2';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -432,6 +433,17 @@
     // reset would grant right now (from #vaporizationBoostTotal).
     const doVaporize = (boost) => {
         const elapsed = vapLastTs ? (Date.now() - vapLastTs) / 1000 : 0;
+        const cloudsBefore = readNum('#footerStat3Span');
+        const projectedGain = numFromText(textOf('reset0Button')); // "Reset for X Clouds" — last render
+        const clicked = clickIf('reset0Button');
+        // The game's click handler runs numbersUpdate() synchronously, so this
+        // post-click read is fresh. projected vs actual is the tell for the
+        // stale-read race this ordering fix addresses — a healthy fire has
+        // actual ≈ projected; a large shortfall means firing on stale numbers.
+        const cloudsAfter = readNum('#footerStat3Span');
+        const actualGain = clicked && cloudsBefore != null && cloudsAfter != null
+            ? cloudsAfter - cloudsBefore
+            : null;
         if (CONFIG.logCycles && elapsed > 0 && boost && boost > 1) {
             const rho = Math.log(boost) / elapsed; // realized growth rate (1/s) — the objective
             const rec = {
@@ -441,15 +453,15 @@
                 rho: +rho.toFixed(5),                       // ln(boost)/elapsed = what we maximize
                 peakRho: +vapPeakScore.toFixed(5),          // best ρ seen this cycle (adaptive only)
                 eff: vapPeakScore > 0 ? +(rho / vapPeakScore).toFixed(3) : null, // ρ_fire / ρ_peak
-                clouds: readNum('#footerStat3Span'),        // clouds before this reset
-                cloudsGain: numFromText(textOf('reset0Button')), // "Reset for X Clouds"
+                clouds: cloudsBefore,                       // banked clouds before this reset
+                cloudsGain: projectedGain,                  // projected (from button text)
+                cloudsActual: actualGain == null ? null : Number(actualGain.toPrecision(4)),
             };
             cycleLog.push(rec);
             if (cycleLog.length > 500) cycleLog.shift();
-            console.log(`[Fundamental] vap #${rec.n}: ${rec.boost}x in ${rec.elapsed}s | ρ=${rec.rho}/s peak=${rec.peakRho} eff=${rec.eff} | +${rec.cloudsGain} clouds`);
+            console.log(`[Fundamental] vap #${rec.n}: ${rec.boost}x in ${rec.elapsed}s | ρ=${rec.rho}/s peak=${rec.peakRho} eff=${rec.eff} | +${rec.cloudsGain} projected / ${rec.cloudsActual == null ? '?' : '+' + rec.cloudsActual} actual clouds`);
         }
-        pushLog(`💨 vaporize ${boost ? boost.toFixed(2) : '?'}× · ${elapsed.toFixed(1)}s`);
-        clickIf('reset0Button');
+        pushLog(`💨 vaporize ${boost ? boost.toFixed(2) : '?'}× · ${elapsed.toFixed(1)}s${actualGain != null ? ` · +${Number(actualGain.toPrecision(3))} clouds` : ''}`);
         resetVaporTracking();
     };
 
@@ -903,8 +915,18 @@
             acceptOfflineDialog();
             applySettings();
             configureNativeAutomation();
-            buyEverything();
+            // Resets BEFORE purchases. Order matters for stage 2: until
+            // researchesExtra[2][0] is owned, pending cloud gain is computed from
+            // CURRENT (spendable) Drops — buying structures spends them — while
+            // the #vaporizationBoostTotal span still shows the value rendered
+            // before this tick's purchases. Buying first therefore made the bot
+            // fire on an inflated stale reading and vaporize for far fewer clouds
+            // than displayed. For every other stage this order is conservative:
+            // their projections (collapse mass/stars, merge boost) only RISE with
+            // purchases, so a pre-buy read can only delay a trigger, never
+            // overshoot it.
             fastResets();
+            buyEverything();
             const now = Date.now();
             if (now - lastSlow >= CONFIG.slowResetEveryMs) {
                 lastSlow = now;

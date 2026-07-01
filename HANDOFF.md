@@ -9,7 +9,7 @@ code itself can't tell you: where things live, what's validated, and what's open
 A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 (https://awwhy.github.io/Fundamental/, source github.com/awWhy/Fundamental) by
 driving its DOM — the game ships as a non-module IIFE with no exposed globals.
-- Script: `Fundamental.user.js` — current shipped version: **v1.13.1**
+- Script: `Fundamental.user.js` — current shipped version: **v1.13.2**
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer
 - Install/update URL: `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
 - User-facing install/usage docs: `README.md`
@@ -43,7 +43,7 @@ driving its DOM — the game ships as a non-module IIFE with no exposed globals.
 ## Validated tuning (current CONFIG reflects all of these — re-run sweep.js to reproduce)
 | Stage | Setting | Why |
 |---|---|---|
-| 2 Submerged | `vaporizeMode: 'fixed'`, `vaporizeBoost: 2.25` | headless sweep; the adaptive ln(boost)/elapsed rule underperforms badly here. Re-checked 2026-07: vaporize cadence does NOT degrade as banked clouds grow within a run (~35-45s/cycle steady from 1e0 to 1e7 clouds), and clouds are zeroed by every stage reset anyway — the "fixed ratio gets harder over a session" theory is refuted |
+| 2 Submerged | `vaporizeMode: 'fixed'`, `vaporizeBoost: 2.25` | headless sweep; the adaptive ln(boost)/elapsed rule underperforms badly here. Re-checked 2026-07: vaporize cadence does NOT degrade as banked clouds grow within a run (~35-45s/cycle steady from 1e0 to 1e7 clouds), and clouds are zeroed by every stage reset anyway — the "fixed ratio gets harder over a session" theory is refuted. v1.13.2 fixed a real user-spotted race: until `researchesExtra[2][0]` is owned, pending cloud gain derives from CURRENT (spendable) Drops, so buying before reading the boost span fired vaporize on stale, inflated numbers — tick() now runs resets before purchases, and the vap log records projected vs actual cloud gain |
 | 4 Interstellar | `collapseMassMultiplier: 1.3` (primary), `collapseBoost: 2.0` (secondary) | Re-validated 2026-07 with the hardened sweep + full trigger cascade: the curve is *flat* — at steady state 1.3x/2x/5x/20x/100x differ by only ~5% quarks/sim-hour (6.74 -> 6.41). 1.3 is still the best point but the historical "6x faster than alternatives" claim was an artifact of a broken harness. Don't burn time re-tuning this; the payoff isn't there |
 | 5 Intergalactic | `strangenessTargets: ['strange3Stage5', 'strange4Stage5']` | strange3 compounds all future quark income; strange4 stops Collapse from wiping Stage 5 progress |
 
