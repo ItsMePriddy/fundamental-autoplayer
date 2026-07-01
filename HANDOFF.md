@@ -9,7 +9,7 @@ code itself can't tell you: where things live, what's validated, and what's open
 A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 (https://awwhy.github.io/Fundamental/, source github.com/awWhy/Fundamental) by
 driving its DOM — the game ships as a non-module IIFE with no exposed globals.
-- Script: `Fundamental.user.js` — current shipped version: **v1.13.0**
+- Script: `Fundamental.user.js` — current shipped version: **v1.13.1**
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer
 - Install/update URL: `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
 - User-facing install/usage docs: `README.md`
@@ -47,18 +47,31 @@ driving its DOM — the game ships as a non-module IIFE with no exposed globals.
 | 4 Interstellar | `collapseMassMultiplier: 1.3` (primary), `collapseBoost: 2.0` (secondary) | Re-validated 2026-07 with the hardened sweep + full trigger cascade: the curve is *flat* — at steady state 1.3x/2x/5x/20x/100x differ by only ~5% quarks/sim-hour (6.74 -> 6.41). 1.3 is still the best point but the historical "6x faster than alternatives" claim was an artifact of a broken harness. Don't burn time re-tuning this; the payoff isn't there |
 | 5 Intergalactic | `strangenessTargets: ['strange3Stage5', 'strange4Stage5']` | strange3 compounds all future quark income; strange4 stops Collapse from wiping Stage 5 progress |
 
-## Native automation handoff (v1.13.0)
+## Native automation handoff (v1.13.1)
 The game runs its OWN auto-vaporize/auto-collapse check every tick inside
 `timeUpdate` once unlocked (strangeness[2][4]≥1 / strangeness[4][4]≥1, or the
 alternate `researchesAuto[2]` route), thresholded by the `#vaporizationInput` /
 `#collapseInput` settings fields (defaults 3× / 2×, otherwise never touched).
-`configureNativeAutomation()` detects the unlock via the hotkey toggles' DOM
-visibility and writes CONFIG values into those fields once, idempotently.
+`configureNativeAutomation()` writes CONFIG values into those fields once per
+session, unconditionally — harmless pre-unlock because the game only reads them
+inside the natively-gated auto path. (v1.13.0 instead tried to *detect* the
+unlock via `#toggleVaporizationHotkey`/`#toggleCollapseHotkey` visibility; that
+never fired because those elements are built lazily by `openHotkeys()` only when
+the player opens the Hotkeys window. Lesson recorded below.)
 **Units:** `#vaporizationInput` takes the vaporize boost ratio (`vaporizeBoost`),
 but `#collapseInput` is compared against the PRODUCTION-BOOST formula
 (`#collapseBoostTotal`), not the raw-mass ratio — it maps to `collapseBoost`,
 never `collapseMassMultiplier`. The script's own per-stage polling continues to
 run alongside; both systems then share consistent thresholds.
+
+**DOM-signal rule of thumb (learned the hard way in v1.13.0):** before gating any
+feature on a DOM element's presence/visibility, verify the element exists in the
+static page HTML (`curl` the live site) or is created at boot — several of the
+game's panels (Hotkeys, version info, other `buildBigWindow` users) construct
+their DOM lazily on first open, so "the compiled source sets its style" does not
+mean "the element exists during normal play". The live deployed bundle and the
+master-branch clone are both v0.2.9 today (verified 2026-07-01) — no version
+drift, but re-check that when validating DOM assumptions after game updates.
 
 ## Open items
 - **Stage 5 merge threshold is unvalidated.** `mergeBoost: 2.0` / `mergeMinBoost: 1.2`

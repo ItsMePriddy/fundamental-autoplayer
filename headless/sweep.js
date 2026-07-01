@@ -189,6 +189,10 @@ async function runSim(name, cfg, savePath) {
         }
         if (loopReached[cur] === undefined) loopReached[cur] = sim;
         lastStage = cur;
+        // Stars/sec denominator = time SPENT in stage 4, accrued every stage-4
+        // tick. A prior version accrued only on ticks where stars increased,
+        // inflating the reported rate to nonsense (hundreds of stars/sec).
+        if (cur === 4) { starSimTimeIn4 += STEP; starSimTimeIn4Total += STEP; }
 
         for (const s of global.stageInfo.activeAll) {
             Stage.setActiveStage(s);
@@ -248,9 +252,8 @@ async function runSim(name, cfg, savePath) {
                 // gain explicitly here, double-counting it against this same check.
                 const curStars = totalStars();
                 if (curStars > prevStarRef) {
-                    const gained = curStars - prevStarRef;
-                    starGainAccum += gained; starSimTimeIn4 += STEP;
-                    starGainAccumTotal += gained; starSimTimeIn4Total += STEP;
+                    starGainAccum += curStars - prevStarRef;
+                    starGainAccumTotal += curStars - prevStarRef;
                 }
                 prevStarRef = curStars;
             } else if (s === 5 && !cfg.useAutos) {
@@ -427,7 +430,16 @@ async function runOne(name, cfg, savePath) {
             __filename, name, `--save=${savePath}`,
             `--simHours=${SIM_CAP_MS / 3600000}`, `--seconds=${WALL_CAP / 1000}`, "--json=1",
         ];
-        const out = execFileSync(process.execPath, childArgs, { encoding: "utf8", maxBuffer: 1024 * 1024 * 64 });
+        let out;
+        try {
+            out = execFileSync(process.execPath, childArgs, { encoding: "utf8", maxBuffer: 1024 * 1024 * 64 });
+        } catch (e) {
+            // Surface the child's own output — "Command failed" alone hides
+            // invariant-violation messages and stack traces from the child.
+            if (e.stdout) process.stdout.write(String(e.stdout).slice(-4000));
+            if (e.stderr) process.stderr.write(String(e.stderr).slice(-4000));
+            throw new Error(`strategy "${name}" child process failed (exit ${e.status ?? "?"}) — its output is above`);
+        }
         const [detail, jsonPart] = out.split(RESULT_MARKER);
         process.stdout.write(detail);
         if (!jsonPart) throw new Error(`child process for "${name}" exited without reporting a result`);

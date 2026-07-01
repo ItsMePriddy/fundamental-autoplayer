@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.13.0
+// @version      1.13.1
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -67,7 +67,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.13.0';
+        return '1.13.1';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -198,10 +198,11 @@
                                 // in the #vaporizationInput/#collapseInput settings fields as its
                                 // threshold. Those default to 3x/2x and are never touched unless a
                                 // player edits them by hand, so left alone the native auto-system
-                                // silently runs on an untuned number. Set them from CONFIG once
-                                // available so whichever system fires — native or this script's own
-                                // polling below, which keeps running unchanged alongside it — uses
-                                // the same threshold. UNITS MATTER here: #vaporizationInput is the
+                                // silently runs on an untuned number. Set them from CONFIG once per
+                                // session (harmless pre-unlock: the game only reads them inside the
+                                // natively-gated auto path) so whichever system fires — native or
+                                // this script's own polling below, which keeps running unchanged
+                                // alongside it — uses the same threshold. UNITS MATTER: #vaporizationInput is the
                                 // same boost ratio as #vaporizationBoostTotal (-> vaporizeBoost),
                                 // but #collapseInput is compared against the PRODUCTION-BOOST
                                 // formula (#collapseBoostTotal), NOT the raw projected/banked mass
@@ -324,13 +325,20 @@
     }
 
     // ---- Native automation handoff ---------------------------------------------
-    // #toggleVaporizationHotkey / #toggleCollapseHotkey are only shown once the
-    // matching "Automatic Vaporization"/"Automatic Collapse" strangeness is owned
-    // (verified: their .style.display toggle is driven by strangeness[2][4]>=1 /
-    // strangeness[4][4]>=1 respectively) — a DOM-observable proxy for a value this
-    // script has no direct access to. Once true, set the native threshold input
-    // once; idempotent (skips if already at target) so a later manual edit by the
-    // player isn't fought.
+    // No unlock detection: #vaporizationInput / #collapseInput exist in the static
+    // page HTML from boot, their 'change' listeners are registered in the game's
+    // boot block, and the values they write (vaporization.input[0] /
+    // collapse.input[0]) are ONLY read inside the game's natively-gated auto path
+    // (vaporizationResetCheck/collapseResetCheck, gated on the Automatic
+    // strangeness or researchesAuto unlocks). Writing them before the unlock is
+    // therefore a harmless no-op that becomes exactly right the moment the unlock
+    // lands. (v1.13.0 tried to detect the unlock via #toggleVaporizationHotkey /
+    // #toggleCollapseHotkey visibility — but those live inside the Hotkeys window,
+    // which openHotkeys() builds LAZILY on first open. The bot never opens it, so
+    // detection never fired and the feature was a silent no-op. Verified against
+    // the live deployed bundle, not just the compiled clone.)
+    // Configured once per session; skips if already at target so a value the
+    // player set mid-session isn't fought (a reload re-asserts CONFIG, by design).
     const nativeConfigured = { vaporize: false, collapse: false };
     function setNativeInput(id, target) {
         const el = $(id);
@@ -344,21 +352,15 @@
     function configureNativeAutomation() {
         if (!CONFIG.configureNativeAutomation) return;
         if (!nativeConfigured.vaporize) {
-            const hotkey = $('toggleVaporizationHotkey');
-            if (hotkey && hotkey.style.display !== 'none') {
-                nativeConfigured.vaporize = setNativeInput('vaporizationInput', CONFIG.vaporizeBoost);
-                if (nativeConfigured.vaporize) pushLog(`⚙️ native auto-vaporize set to ${CONFIG.vaporizeBoost}×`);
-            }
+            nativeConfigured.vaporize = setNativeInput('vaporizationInput', CONFIG.vaporizeBoost);
+            if (nativeConfigured.vaporize) pushLog(`⚙️ native auto-vaporize threshold set to ${CONFIG.vaporizeBoost}×`);
         }
         if (!nativeConfigured.collapse) {
-            const hotkey = $('toggleCollapseHotkey');
-            if (hotkey && hotkey.style.display !== 'none') {
-                // collapseBoost, NOT collapseMassMultiplier: the game compares this input
-                // against the production-boost ratio (#collapseBoostTotal), and 1.3 in
-                // boost units would collapse far too eagerly.
-                nativeConfigured.collapse = setNativeInput('collapseInput', CONFIG.collapseBoost);
-                if (nativeConfigured.collapse) pushLog(`⚙️ native auto-collapse set to ${CONFIG.collapseBoost}× boost`);
-            }
+            // collapseBoost, NOT collapseMassMultiplier: the game compares this input
+            // against the production-boost ratio (#collapseBoostTotal), and 1.3 in
+            // boost units would collapse far too eagerly.
+            nativeConfigured.collapse = setNativeInput('collapseInput', CONFIG.collapseBoost);
+            if (nativeConfigured.collapse) pushLog(`⚙️ native auto-collapse threshold set to ${CONFIG.collapseBoost}× boost`);
         }
     }
 

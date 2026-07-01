@@ -33,6 +33,10 @@ const DEFAULT_VALUES = {
 };
 const SHIPPED_VALUE = { collapseMult: 1.3, vapBoost: 2.25 };
 const VALUES = (flag("values", null) || DEFAULT_VALUES[AXIS].join(",")).split(",").map(Number);
+if (!VALUES.length || VALUES.some((v) => !isFinite(v) || v <= 1)) {
+    console.error(`--values must be a comma-separated list of numbers > 1 (got: ${VALUES.join(", ")}) — the game's own input handlers reject thresholds <= 1`);
+    process.exit(1);
+}
 const SIM_HOURS = flag("simHours", "16");
 const SECONDS = flag("seconds", "120");
 const CONCURRENCY = Number(flag("concurrency", "6"));

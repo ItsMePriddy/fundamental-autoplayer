@@ -31,6 +31,9 @@ globals):
   resets on a slower cadence.
 - Sets confirmation prompts to "None" so resets never block, and turns on the game's
   own automation + auto-stage-switching.
+- Pre-configures the game's own auto-vaporize / auto-collapse threshold inputs, so
+  once the matching "Automatic" strangeness upgrades are bought, the game's native
+  automation runs with the script's tuned values instead of untouched defaults.
 - Auto-accepts the offline-time dialog.
 
 ## Important: keep the tab in the foreground
