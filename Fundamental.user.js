@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.15.0
+// @version      1.15.1
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -68,7 +68,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.15.0';
+        return '1.15.1';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -1320,17 +1320,32 @@
             const boost = readNum('#vaporizationBoostTotal > span');
             const target = CONFIG.vaporizeMode === 'fixed' ? CONFIG.vaporizeBoost : CONFIG.vaporizeMinBoost;
             const progress = boost == null ? null : Math.max(0, Math.min(1, boost / target));
+            // Banked clouds + pending reset gain, so the boost reading has context.
+            // Above 1e4 banked clouds the game softcaps the clouds EFFECT
+            // ((clouds-1e4)^0.7+1e4), so a pending gain many times the bank can
+            // still be a small boost \u2014 without showing these numbers, the HUD's
+            // boost looks contradictory next to the game's cloud counts.
+            const bankedClouds = readNum('#footerStat3Span');
+            const resetText2 = textOf('reset0Button');
+            const pendingClouds = /cloud/i.test(resetText2) ? numFromText(resetText2) : null;
+            const softcapped = bankedClouds != null && bankedClouds > 1e4;
             return {
                 decision: boost != null && boost >= target ? 'Vaporizing now' : 'Building vapor boost',
                 decisionDetail: CONFIG.vaporizeMode === 'fixed' ? 'Waiting for the fixed high-ROI reset point.' : 'Following the adaptive growth-rate peak.',
                 ready: boost != null && boost >= target,
                 heading: 'Vaporization',
-                metrics: [[resource.label, resource.value], ['Current boost', boost == null ? '\u2014' : `${boost.toFixed(2)}\u00d7`], ['Mode', CONFIG.vaporizeMode]],
+                metrics: [
+                    ['Banked clouds', bankedClouds == null ? '\u2014' : fmtHudNumber(bankedClouds, 6)],
+                    ['Pending gain', pendingClouds == null ? '\u2014' : `+${fmtHudNumber(pendingClouds, 6)}`],
+                    ['Current boost', boost == null ? '\u2014' : `${boost.toFixed(2)}\u00d7 / ${target.toFixed(2)}\u00d7`],
+                ],
                 progress: progress == null ? null : { label: 'Boost vs. reset target', pct: `${(progress * 100).toFixed(1)}%`, width: progress * 100, left: '1.00\u00d7', current: `${boost.toFixed(2)}\u00d7`, target: `${target.toFixed(2)}\u00d7` },
                 targetLabel: 'Next vaporization',
                 targetValue: `${target.toFixed(2)}\u00d7 boost`,
                 targetDetail: boost == null ? 'Waiting for the boost stat.' : `+${Math.max(0, target - boost).toFixed(2)}\u00d7 boost needed`,
-                signal: `Cycle time ${vapLastTs ? fmtDur((Date.now() - vapLastTs) / 1000) : '\u2014'}`,
+                signal: softcapped
+                    ? `Cycle ${vapLastTs ? fmtDur((Date.now() - vapLastTs) / 1000) : '\u2014'} \u00b7 clouds effect softcapped above 1e4 \u2014 boost, not cloud count, is the trigger`
+                    : `Cycle time ${vapLastTs ? fmtDur((Date.now() - vapLastTs) / 1000) : '\u2014'}`,
                 lastLabel: 'Last vaporization',
                 lastValue: latestEventText(/vaporize/i),
             };
