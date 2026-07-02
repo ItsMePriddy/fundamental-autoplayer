@@ -52,16 +52,31 @@ function resolveSavePath() {
 }
 
 // ── built-in strategies (field names match Fundamental.user.js CONFIG) ────
+// Star-trigger knobs (the userscript's priority-1 "stars ready" collapse):
+//   starMinBatch    — only fire the star trigger once the PENDING remnant sum
+//                     reaches this count (default 1 = shipped immediate-fire)
+//   starMinGapMs    — min gap for the star trigger (default 2000 = shipped)
+//   starTriggerOff  — disable the star trigger entirely (mass/element/fallbacks only)
 const STRATEGIES = {
     auto: { label: "Game's own automation only (no scripted timing)", useAutos: true },
-    shipped: { label: "Shipped defaults — Fundamental.user.js CONFIG",
-        vapBoost: 2.25, collapseMult: 1.3, mergeBoost: 2.0, mergeMinBoost: 1.2, mergeMaxWaitMs: 120000 },
+    shipped: { label: "Shipped defaults — Fundamental.user.js CONFIG (star batch >=50 @ 30s since v1.14)",
+        vapBoost: 2.25, collapseMult: 1.3, starMinBatch: 50, starMinGapMs: 30000,
+        mergeBoost: 2.0, mergeMinBoost: 1.2, mergeMaxWaitMs: 120000 },
+    "star-immediate": { label: "Pre-v1.14 behavior — star trigger fires on ANY pending remnant (2s gap)",
+        vapBoost: 2.25, collapseMult: 1.3, starMinBatch: 1, starMinGapMs: 2000,
+        mergeBoost: 2.0, mergeMinBoost: 1.2, mergeMaxWaitMs: 120000 },
+    "star-off": { label: "No star trigger — mass ROI 1.3x + element/fallbacks only",
+        vapBoost: 2.25, collapseMult: 1.3, starTriggerOff: true,
+        mergeBoost: 2.0, mergeMinBoost: 1.2, mergeMaxWaitMs: 120000 },
     "collapse-1.1x": { label: "Aggressive collapse (1.1x) + low vaporize boost",
-        vapBoost: 2.0, collapseMult: 1.1, mergeBoost: 1.5, mergeMinBoost: 1.1, mergeMaxWaitMs: 60000 },
+        vapBoost: 2.0, collapseMult: 1.1, starMinBatch: 50, starMinGapMs: 30000,
+        mergeBoost: 1.5, mergeMinBoost: 1.1, mergeMaxWaitMs: 60000 },
     "collapse-1.5x": { label: "Relaxed collapse (1.5x)",
-        vapBoost: 2.25, collapseMult: 1.5, mergeBoost: 2.0, mergeMinBoost: 1.2, mergeMaxWaitMs: 120000 },
+        vapBoost: 2.25, collapseMult: 1.5, starMinBatch: 50, starMinGapMs: 30000,
+        mergeBoost: 2.0, mergeMinBoost: 1.2, mergeMaxWaitMs: 120000 },
     "collapse-2.0x": { label: "Conservative collapse (2.0x) + higher merge bar",
-        vapBoost: 2.25, collapseMult: 2.0, mergeBoost: 3.0, mergeMinBoost: 1.5, mergeMaxWaitMs: 180000 },
+        vapBoost: 2.25, collapseMult: 2.0, starMinBatch: 50, starMinGapMs: 30000,
+        mergeBoost: 3.0, mergeMinBoost: 1.5, mergeMaxWaitMs: 180000 },
 };
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -225,7 +240,10 @@ async function runSim(name, cfg, savePath) {
                     const nm = global.collapseInfo.newMass;
                     const cm = player.collapse.mass;
                     const sc = global.collapseInfo.starCheck || [0, 0, 0];
-                    const hasStarGain = sc[0] > 0 || sc[1] > 0 || sc[2] > 0;
+                    const pendingStars = sc[0] + sc[1] + sc[2];
+                    const starBatch = cfg.starMinBatch ?? 1;
+                    const starGapMs = cfg.starMinGapMs ?? 2000;
+                    const starReady = !cfg.starTriggerOff && pendingStars >= starBatch;
                     const elementPending = player.elements.some((v) => v === 0.5);
                     const sinceCollapse = sim - lastCollapse;
                     const massRatio = cm > 0 ? nm / cm : 0;
@@ -234,7 +252,7 @@ async function runSim(name, cfg, savePath) {
                     const hardStallMs = cfg.collapseHardStallMs ?? 300000;
 
                     let fire = false;
-                    if (hasStarGain && sinceCollapse >= 2000) fire = true;                                 // 1. stars ready
+                    if (starReady && sinceCollapse >= starGapMs) fire = true;                              // 1. stars ready (batch/gap-gated)
                     else if (elementPending && sinceCollapse >= 3000) fire = true;                          // 2. element pending
                     else if (sinceCollapse >= 2000 && cm > 0 && massRatio >= cfg.collapseMult) fire = true;  // 3. primary mass ROI
                     else if (sinceCollapse >= hardStallMs) fire = true;                                     // 5. hard stall (unconditional)
@@ -385,7 +403,7 @@ const RESULT_MARKER = "__RESULT_JSON__";
 // parameter search doesn't need a named STRATEGIES entry per grid point.
 // Unspecified fields fall back to the shipped defaults, so e.g. sweeping only
 // --collapseMult still runs with a sane, fixed vapBoost/merge configuration.
-const ADHOC_FIELDS = ["collapseMult", "vapBoost", "mergeBoost", "mergeMinBoost", "mergeMaxWaitMs"];
+const ADHOC_FIELDS = ["collapseMult", "vapBoost", "mergeBoost", "mergeMinBoost", "mergeMaxWaitMs", "starMinBatch", "starMinGapMs"];
 function adhocCfgFromFlags() {
     const present = ADHOC_FIELDS.filter((f) => flag(f, null) !== null);
     if (!present.length) return null;

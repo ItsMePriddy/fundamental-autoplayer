@@ -9,7 +9,7 @@ code itself can't tell you: where things live, what's validated, and what's open
 A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 (https://awwhy.github.io/Fundamental/, source github.com/awWhy/Fundamental) by
 driving its DOM — the game ships as a non-module IIFE with no exposed globals.
-- Script: `Fundamental.user.js` — current shipped version: **v1.13.2**
+- Script: `Fundamental.user.js` — current shipped version: **v1.14.0**
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer
 - Install/update URL: `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
 - User-facing install/usage docs: `README.md`
@@ -44,7 +44,7 @@ driving its DOM — the game ships as a non-module IIFE with no exposed globals.
 | Stage | Setting | Why |
 |---|---|---|
 | 2 Submerged | `vaporizeMode: 'fixed'`, `vaporizeBoost: 2.25` | headless sweep; the adaptive ln(boost)/elapsed rule underperforms badly here. Re-checked 2026-07: vaporize cadence does NOT degrade as banked clouds grow within a run (~35-45s/cycle steady from 1e0 to 1e7 clouds), and clouds are zeroed by every stage reset anyway — the "fixed ratio gets harder over a session" theory is refuted. v1.13.2 fixed a real user-spotted race: until `researchesExtra[2][0]` is owned, pending cloud gain derives from CURRENT (spendable) Drops, so buying before reading the boost span fired vaporize on stale, inflated numbers — tick() now runs resets before purchases, and the vap log records projected vs actual cloud gain |
-| 4 Interstellar | `collapseMassMultiplier: 1.3` (primary), `collapseBoost: 2.0` (secondary) | Re-validated 2026-07 with the hardened sweep + full trigger cascade: the curve is *flat* — at steady state 1.3x/2x/5x/20x/100x differ by only ~5% quarks/sim-hour (6.74 -> 6.41). 1.3 is still the best point but the historical "6x faster than alternatives" claim was an artifact of a broken harness. Don't burn time re-tuning this; the payoff isn't there |
+| 4 Interstellar | `collapseStarBatch: 50` / `collapseStarGapMs: 30s` (v1.14.0), `collapseMassMultiplier: 1.3` (primary), `collapseBoost: 2.0` (secondary) | User-spotted, sim-confirmed (100 matched sim-hours, 2026-07-02): firing the star trigger on ANY pending remnant (pre-v1.14) gave 6.66 qks/simH vs 17.0 with batch>=50/30s-gap or star-off — ~2.6x slower overall and ~12x slower star banking, because +1-star collapses wipe production before buildings compound (live symptom: collapses at ~1.001x mass, reason "stars"). Batch>=50 measured identical to star-off; kept as a solar-hardcap safety valve. This also RESOLVES the earlier "flat multiplier curve" mystery: it was flat because the star trigger dominated every strategy — under batching the multiplier matters again (1.3x: 17.0 > 2.5x: 15.3 > 5x: 13.1) |
 | 5 Intergalactic | `strangenessTargets: ['strange3Stage5', 'strange4Stage5']` | strange3 compounds all future quark income; strange4 stops Collapse from wiping Stage 5 progress |
 
 ## Native automation handoff (v1.13.1)
@@ -74,6 +74,13 @@ master-branch clone are both v0.2.9 today (verified 2026-07-01) — no version
 drift, but re-check that when validating DOM assumptions after game updates.
 
 ## Open items
+- **Fine collapse-multiplier re-sweep under star batching.** 1.3x beat 2.5x and 5x
+  with the v1.14 batch gating, but the 1.1-2.0 band hasn't been re-swept since the
+  star trigger stopped dominating — cheap to run (`node grid-sweep.js
+  --axis=collapseMult` now inherits the batched shipped config). Same for
+  `collapseStarBatch`/`collapseStarGapMs` themselves: 50/30s measured identical to
+  disabling the trigger, so the exact values are uncritical, but they've not been
+  tuned finely.
 - **Stage 5 merge threshold is unvalidated.** `mergeBoost: 2.0` / `mergeMinBoost: 1.2`
   were carried over from the collapse pattern, not derived for merge — merge has a
   fundamentally different cost (resetting true-galaxy count loses exponential

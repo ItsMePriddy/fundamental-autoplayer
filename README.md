@@ -18,8 +18,9 @@ at the top of the script.
 
 In Stage 4, the panel shows banked raw mass, projected raw collapse mass, and their
 true ROI ratio against its trigger, plus the last observed collapse. Pending star
-remnants are shown as immediately actionable because the game accepts star-only
-collapses without requiring a mass increase.
+remnants accumulate toward a batch target (50 by default) before triggering a
+star-only collapse — firing on every single remnant was measured to slow the whole
+progression loop ~2.6× by keeping built-up production perpetually wiped.
 
 ## What it does
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.13.2
+// @version      1.14.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -68,7 +68,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.13.2';
+        return '1.14.0';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -153,8 +153,20 @@
                                 // #collapseBoostTotal, so grabbing them fast is high-ROI.
         collapseElementGapMs: 3000, // min gap between element-triggered collapses (avoids a double
                                 // fire during the render lag before the element flips to "created").
-        collapseMinGapMs: 2000,  // min gap between star-driven collapses (prevents rapid-fire when
-                                // star gains appear in quick succession after a rebuild).
+        collapseMinGapMs: 2000,  // min gap between collapse attempts (prevents rapid-fire while
+                                // conditions stay satisfied across consecutive ticks).
+        collapseStarBatch: 50,  // the stars trigger fires only once the SUM of pending star
+                                // remnants reaches this count. Firing on ANY pending remnant
+                                // (the pre-v1.14 behavior: batch 1, 2s gap) measured ~2.6x fewer
+                                // quarks/hour AND ~12x slower star banking over 100 matched
+                                // sim-hours: +1-star collapses wipe production before buildings
+                                // compound, so banked mass crawls at ~1.001x per collapse,
+                                // mass-gated elements stall, and the whole loop drags. >=50 with
+                                // a 30s gap measured identical to disabling the trigger entirely;
+                                // kept as a safety valve for solar-hardcap regimes where the mass
+                                // ratio can't reach collapseMassMultiplier but big star batches
+                                // still accumulate.
+        collapseStarGapMs: 30000, // min gap between star-batch collapses.
         collapseMassMultiplier: 1.3,
                                 // #footerStat2Span is player.collapse.mass: the real banked raw
                                 // mass. Collapse at projected/banked >= 1.3×, the headless optimum.
@@ -515,7 +527,9 @@
     // #solarMassStat is a different value: the projected/current mass-effect ratio.
     //
     // Triggers (checked in priority order, first match wins):
-    //   1. Stars are pending (the game accepts these without a mass increase)
+    //   1. A full BATCH of stars is pending (>= collapseStarBatch; the game accepts
+    //      star-only collapses without a mass increase, but firing on every single
+    //      remnant measured ~2.6x slower overall — see collapseStarBatch)
     //   2. Element-pending after collapseElementGapMs
     //   3. Raw projected/banked mass ROI reaches collapseMassMultiplier
     //   4. Total collapse boost reaches collapseBoost
@@ -628,9 +642,9 @@
         if (collapseLastAttemptTs && sinceAttempt < CONFIG.collapseMinGapMs / 1000) return;
 
         const sg = readStarGains();
-        const hasStarGain = (sg.s0 !== null && sg.s0 > 0) ||
-                            (sg.s1 !== null && sg.s1 > 0) ||
-                            (sg.s2 !== null && sg.s2 > 0);
+        const pendingStars = (sg.s0 || 0) + (sg.s1 || 0) + (sg.s2 || 0);
+        const hasStarGain = pendingStars > 0;
+        const starReady = pendingStars >= CONFIG.collapseStarBatch;
 
         // Element pending (self-disabling when strangeness[4][6] ≥ 1)
         const elementPending = CONFIG.collapseOnElement && !!document.querySelector('[id^="element"].awaiting');
@@ -638,8 +652,8 @@
         let fire = false;
         let reason = '';
 
-        if (hasStarGain && elapsed >= CONFIG.collapseMinGapMs / 1000) {
-            fire = true; reason = 'stars';                                   // 1. bank ready stars immediately
+        if (starReady && elapsed >= CONFIG.collapseStarGapMs / 1000) {
+            fire = true; reason = 'stars';                                   // 1. bank a full batch of ready stars
         } else if (elementPending && elapsed >= CONFIG.collapseElementGapMs / 1000) {
             fire = true; reason = 'element';                                 // 2. element pending
         } else if (massRatio >= CONFIG.collapseMassMultiplier &&
@@ -1209,11 +1223,12 @@
         const totalBoost = readNum('#collapseBoostTotal > span');
         const stars = readStarGains();
         const starValues = [stars.s0, stars.s1, stars.s2].map((value) => value || 0);
-        const hasStars = starValues.some((value) => value > 0);
+        const pendingStarSum = starValues.reduce((sum, value) => sum + value, 0);
+        const hasStars = pendingStarSum > 0;
         const pendingElements = document.querySelectorAll('[id^="element"].awaiting').length;
         const massTarget = CONFIG.collapseMassMultiplier;
         const massReady = massRatio != null && massRatio >= massTarget;
-        const starReady = hasStars;
+        const starReady = pendingStarSum >= CONFIG.collapseStarBatch;
         const boostReady = totalBoost != null && totalBoost >= CONFIG.collapseBoost;
         const ready = massReady || starReady || pendingElements > 0 || boostReady;
         let decision = 'Building collapse ROI';
@@ -1222,8 +1237,8 @@
             decision = 'Game auto-collapse';
             decisionDetail = 'The script is observing results; the game owns collapse timing.';
         } else if (ready) {
-            decision = starReady ? 'Stars ready to bank' : 'Collapse trigger ready';
-            if (starReady) decisionDetail = `Collapse will bank +${starValues.join(' / ')} stars; no mass increase is required.`;
+            decision = starReady ? 'Star batch ready to bank' : 'Collapse trigger ready';
+            if (starReady) decisionDetail = `Collapse will bank +${starValues.join(' / ')} stars (batch of ${pendingStarSum}); no mass increase is required.`;
             else if (pendingElements > 0) decisionDetail = `${pendingElements} element${pendingElements === 1 ? '' : 's'} awaiting activation.`;
             else if (massReady) decisionDetail = `Projected mass reached the ${massTarget.toFixed(2)}\u00d7 ROI target.`;
             else decisionDetail = `Total collapse boost reached ${totalBoost.toFixed(2)}\u00d7.`;
@@ -1239,7 +1254,7 @@
         const signal = pendingElements > 0
             ? `${pendingElements} element${pendingElements === 1 ? '' : 's'} awaiting activation`
             : hasStars
-                ? `Star gain pending: +${starValues.join(' / ')}`
+                ? `Star batch building: ${pendingStarSum} / ${CONFIG.collapseStarBatch} pending (+${starValues.join(' / ')})`
                 : 'No star or element trigger pending';
         return {
             decision,
@@ -1259,18 +1274,18 @@
                 current: `${massRatio.toFixed(3)}\u00d7`,
                 target: `${massTarget.toFixed(2)}\u00d7`,
             },
-            targetLabel: totalBoost == null ? 'Collapse owner' : hasStars ? 'Star remnants ready' : 'Next mass-only collapse',
-            targetValue: totalBoost == null ? 'Game controlled' : hasStars ? `+${starValues.join(' / ')}` : `${massTarget.toFixed(2)}\u00d7 mass gain`,
+            targetLabel: totalBoost == null ? 'Collapse owner' : starReady ? 'Star batch ready' : 'Next mass-only collapse',
+            targetValue: totalBoost == null ? 'Game controlled' : starReady ? `+${starValues.join(' / ')}` : `${massTarget.toFixed(2)}\u00d7 mass gain`,
             targetDetail: totalBoost == null
                 ? 'The game has unlocked its own collapse automation.'
-                : hasStars
-                    ? `Collapse is actionable now at ${fmtHudMass(projectedMass)}; no minimum mass gain is required.`
+                : starReady
+                    ? `Batch of ${pendingStarSum} pending remnants (target ${CONFIG.collapseStarBatch}); no minimum mass gain is required.`
                 : needed == null
                     ? 'Waiting for collapse data.'
                     : needed > 0
                         ? `+${needed.toFixed(3)}\u00d7 mass gain needed${projectedMass == null ? '' : `; projected mass is ${fmtHudMass(projectedMass)}`}`
                         : 'Mass-only ROI condition is met',
-            signal: hasStars ? 'Star trigger bypasses the mass-only ROI floor' : signal,
+            signal: starReady ? `Star batch (>=${CONFIG.collapseStarBatch}) bypasses the mass-only ROI floor` : signal,
             lastLabel: 'Last collapse',
             lastValue: lastText,
         };
