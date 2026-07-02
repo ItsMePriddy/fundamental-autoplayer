@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.14.0
+// @version      1.15.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -68,7 +68,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.14.0';
+        return '1.15.0';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -183,27 +183,39 @@
                                 // away instead of sitting idle. (12h only maxes a SINGLE export.)
         smartStrangeness: true, // route the shared strange-quark pool to the CURRENT stage first,
                                 // then highest->lowest, instead of the game's stage-1-first dump.
-        strangenessTargets: ['strange3Stage5', 'strange4Stage5'],
-                                // Critical stage 5 unlocks. Both are also bought
-                                // unconditionally before the target loop — listed
-                                // here as double insurance.
-                                // strange3Stage5 (s5 idx2) = 1.4× quark multiplier
-                                //   (max lvl 2, costs 4+16=20 quarks). Compounds ALL
-                                //   future quark income — highest ROI in the game.
-                                // strange4Stage5 (s5 idx3) = Intergalactic collapse
-                                //   immunity (cost 24 quarks). Enables auto-upgrade
-                                //   in stage 5. Without it, Collapse resets wipe
-                                //   Intergalactic progress — it's a gating unlock.
-                                // After these two are owned (44 quarks total), the
-                                // bot falls through to normal current-stage-first
-                                // buying. Do NOT add strange5Stage5 here — it costs
-                                // 15,600 quarks and would just timeout-hold uselessly.
-                                // Previous targets (strange6Stage4, strange7Stage4)
-                                // are both maxed and no longer purchasable.
+        strangenessTargets: [
+                                // Priority route (first UNOWNED entry gets a dedicated saving
+                                // window — see strangenessTargetTimeoutMs). DOM ids are the
+                                // strangeness array index + 1 (strange3Stage5 = strangeness[5][2]).
+            'strange3Stage5',   // s5 idx2: 1.4×/lvl quark multiplier — compounds ALL future
+                                //   quark income; always pursued first (also clicked
+                                //   unconditionally every tick as double insurance).
+            'strange4Stage5',   // s5 idx3: Intergalactic collapse-immunity + enables
+                                //   auto-upgrades there — gating unlock for Stage 5 progress.
+            'strange5Stage4',   // s4 idx4: Automatic Collapse — hands stage 4 timing to the
+                                //   game's native auto, which then runs on the #collapseInput
+                                //   threshold this script pre-configures (see
+                                //   configureNativeAutomation).
+            'strange5Stage2',   // s2 idx4: Automatic Vaporization — same handoff for stage 2
+                                //   via #vaporizationInput.
+            'strange7Stage5',   // s5 idx6: Automatic Stage reset (~480 quarks) — the key
+                                //   unlock for running the full quark loop hands-free.
+            'strange5Stage5',   // s5 idx4: Automatic Galaxy (~15,600 quarks) — auto-collapse
+                                //   for Galaxy affordability once Intergalactic is real.
+            'strange10Stage5',  // s5 idx9: Automatic Merge (~6e6 quarks) — endgame; its
+                                //   saving window will simply expire until income catches up.
+        ],
         strangenessTarget: null, // legacy single-target override; use strangenessTargets above.
-        strangenessTargetTimeoutMs: 600000, // stop holding after 10 min if it can't be bought
-                                // because it appears locked. Expensive-but-unlocked targets are held
-                                // indefinitely; spending around them was slower in seeded tests.
+        strangenessTargetTimeoutMs: 600000, // dedicated saving window per target: while the first
+                                // unowned target is within this window, ALL other strangeness
+                                // spending holds so quarks accumulate for it. When the window
+                                // expires (or the target is bought), normal buying resumes — the
+                                // target keeps being clicked first every tick, so it's still
+                                // grabbed the moment it becomes affordable. (Pre-v1.15 this
+                                // window only expired for LOCKED-looking targets; an unlocked but
+                                // unaffordable one held all spending indefinitely, which froze
+                                // strangeness buying entirely once late-game targets got
+                                // expensive.)
         configureNativeAutomation: true, // once "Automatic Vaporization"/"Automatic Collapse"
                                 // strangeness is owned, the GAME's own timeUpdate() already calls
                                 // its internal vaporizationResetCheck()/collapseResetCheck() every
@@ -395,11 +407,15 @@
     // which multiplies ALL future quark income — buy it before anything else. strange4Stage5
     // (Intergalactic collapse-immunity + enables Upgrade automatization there) is the next key
     // unlock. Everything else is local/automation and is well-served by current-stage-first below.
-    // strangenessTargets: upgrades to buy NEXT — the bot HOLDS all other strangeness so quarks
-    // accumulate for the first unowned target, then resumes normal buying once every target is
-    // owned. A timeout only releases a target if it appears locked; expensive-but-unlocked route
-    // targets are worth saving for. The quark-gain multiplier (strange3Stage5) is always pursued
-    // outside this mechanism, regardless of what's in the list.
+    // strangenessTargets: upgrades to buy NEXT, in priority order. The first unowned target
+    // gets ONE dedicated saving window (strangenessTargetTimeoutMs): all other strangeness
+    // spending holds so the shared quark pool accumulates for it. When the window expires or
+    // the target is bought, normal buying resumes — every unowned target is still clicked
+    // first each tick, so it's grabbed the instant it's affordable. Each target's window is
+    // tracked separately (pre-v1.15, one shared timer meant later targets got shortened or
+    // zero windows, and unlocked-but-expensive targets held spending FOREVER — which froze
+    // strangeness buying entirely once the cheap early targets were owned).
+    let strangeTargetId = null;
     let strangeTargetStart = 0;
     function strangeUnowned(id) {
         const m = textOf(id).match(/(\d[\d.eE+]*)\s*\/\s*(\d[\d.eE+]*)/);
@@ -414,18 +430,25 @@
     function buyStrangenessSmart() {
         clickIf('strange3Stage5'); // highest-ROI quark-gain multiplier — always pursue (compounds income)
         const target = currentStrangenessTarget();
+        if (target !== strangeTargetId) {
+            // Target changed (previous one bought, or list edited) — start a fresh window.
+            strangeTargetId = target;
+            strangeTargetStart = target ? Date.now() : 0;
+            if (target) pushLog(`💠 saving for ${target} (${Math.round(CONFIG.strangenessTargetTimeoutMs / 60000)} min window)`);
+        }
         if (target) {
-            if (!strangeTargetStart) strangeTargetStart = Date.now();
             clickIf(target); // buy it the instant quarks allow
-            const targetText = textOf(target);
-            const looksLocked = /locked|unlock|requires|reach|need/i.test(targetText);
-            if (!looksLocked || Date.now() - strangeTargetStart <= CONFIG.strangenessTargetTimeoutMs) return; // hold the rest
-        } else { strangeTargetStart = 0; }
+            if (Date.now() - strangeTargetStart <= CONFIG.strangenessTargetTimeoutMs) return; // hold the rest
+            // Window expired: fall through to normal buying. The target stays first in
+            // line (clicked above each tick) until it's actually bought.
+        }
         clickIf('strange4Stage5'); // Intergalactic collapse-immunity / enables auto-upgrade there
         const cur = activeStage();
         const order = [cur];
         for (let s = 6; s >= 1; s--) if (s !== cur) order.push(s);
-        for (const s of order) for (let i = 1; i <= 10; i++) clickIf('strange' + i + 'Stage' + s);
+        // i <= 11: stage 5 has an 11th strangeness (strange11Stage5, Galactic tide);
+        // clickIf is a no-op for stages that only have 10.
+        for (const s of order) for (let i = 1; i <= 11; i++) clickIf('strange' + i + 'Stage' + s);
     }
 
     // ---- Vaporization timing (stage 2) ---------------------------------------

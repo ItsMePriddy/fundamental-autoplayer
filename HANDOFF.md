@@ -9,7 +9,7 @@ code itself can't tell you: where things live, what's validated, and what's open
 A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 (https://awwhy.github.io/Fundamental/, source github.com/awWhy/Fundamental) by
 driving its DOM — the game ships as a non-module IIFE with no exposed globals.
-- Script: `Fundamental.user.js` — current shipped version: **v1.14.0**
+- Script: `Fundamental.user.js` — current shipped version: **v1.15.0**
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer
 - Install/update URL: `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
 - User-facing install/usage docs: `README.md`
@@ -45,7 +45,7 @@ driving its DOM — the game ships as a non-module IIFE with no exposed globals.
 |---|---|---|
 | 2 Submerged | `vaporizeMode: 'fixed'`, `vaporizeBoost: 2.25` | headless sweep; the adaptive ln(boost)/elapsed rule underperforms badly here. Re-checked 2026-07: vaporize cadence does NOT degrade as banked clouds grow within a run (~35-45s/cycle steady from 1e0 to 1e7 clouds), and clouds are zeroed by every stage reset anyway — the "fixed ratio gets harder over a session" theory is refuted. v1.13.2 fixed a real user-spotted race: until `researchesExtra[2][0]` is owned, pending cloud gain derives from CURRENT (spendable) Drops, so buying before reading the boost span fired vaporize on stale, inflated numbers — tick() now runs resets before purchases, and the vap log records projected vs actual cloud gain |
 | 4 Interstellar | `collapseStarBatch: 50` / `collapseStarGapMs: 30s` (v1.14.0), `collapseMassMultiplier: 1.3` (primary), `collapseBoost: 2.0` (secondary) | User-spotted, sim-confirmed (100 matched sim-hours, 2026-07-02): firing the star trigger on ANY pending remnant (pre-v1.14) gave 6.66 qks/simH vs 17.0 with batch>=50/30s-gap or star-off — ~2.6x slower overall and ~12x slower star banking, because +1-star collapses wipe production before buildings compound (live symptom: collapses at ~1.001x mass, reason "stars"). Batch>=50 measured identical to star-off; kept as a solar-hardcap safety valve. This also RESOLVES the earlier "flat multiplier curve" mystery: it was flat because the star trigger dominated every strategy — under batching the multiplier matters again (1.3x: 17.0 > 2.5x: 15.3 > 5x: 13.1) |
-| 5 Intergalactic | `strangenessTargets: ['strange3Stage5', 'strange4Stage5']` | strange3 compounds all future quark income; strange4 stops Collapse from wiping Stage 5 progress |
+| 5 Intergalactic | `strangenessTargets`: quark multiplier -> gravitational bound -> the automation chain (Auto Collapse s4, Auto Vaporization s2, Auto Stage, Auto Galaxy, Auto Merge) | v1.15.0: each target now gets ONE bounded saving window (`strangenessTargetTimeoutMs`, per-target timer) then buying resumes with the target still clicked first each tick. Pre-v1.15, unlocked-but-expensive targets held ALL strangeness spending indefinitely — this froze strangeness buying entirely once the cheap early targets were owned (user-reported symptom). The generic loop also now clicks `strange11Stage5` (Galactic tide), which the old 1..10 loop could never buy |
 
 ## Native automation handoff (v1.13.1)
 The game runs its OWN auto-vaporize/auto-collapse check every tick inside
