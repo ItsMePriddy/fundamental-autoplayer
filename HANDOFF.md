@@ -9,7 +9,7 @@ code itself can't tell you: where things live, what's validated, and what's open
 A Tampermonkey userscript that auto-plays awWhy's **Fundamental** idle game
 (https://awwhy.github.io/Fundamental/, source github.com/awWhy/Fundamental) by
 driving its DOM — the game ships as a non-module IIFE with no exposed globals.
-- Script: `Fundamental.user.js` — current shipped version: **v1.15.1**
+- Script: `Fundamental.user.js` — current shipped version: **v1.16.0**
 - Repo: https://github.com/ItsMePriddy/fundamental-autoplayer
 - Install/update URL: `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
 - User-facing install/usage docs: `README.md`
@@ -72,6 +72,29 @@ their DOM lazily on first open, so "the compiled source sets its style" does not
 mean "the element exists during normal play". The live deployed bundle and the
 master-branch clone are both v0.2.9 today (verified 2026-07-01) — no version
 drift, but re-check that when validating DOM assumptions after game updates.
+
+## Non-vacuum endgame structure (v1.16.0 — source-verified + sim-confirmed)
+Corrects several earlier assumptions; don't re-derive:
+- Stage resets ADVANCE the run 1->2->3->4 (each grants ~1 quark); buying Iron
+  (element 26, 1e48 stardust — auto-bought by `createAllFooter`'s element loop)
+  flips `current` to 5, and stages 4+5 are then CO-ACTIVE (collapse keeps
+  running during stage 5).
+- Once at 4/5 the stage reset maps to `stageResetCheck(5)` (Iron-gated). The
+  moment Iron lands it becomes legal — pre-v1.16 the bot fired it within
+  seconds, capping every run at ~4 min of stage-4 development ("stuck looping
+  1-4" symptom, 115 resets with elements stuck at 11).
+- The REAL progression gate: the two stage-4 MILESTONES, advanced by per-run
+  peaks — "Remnants of past" (stardust: 1e48..1e60 across 8 tiers) and
+  "Supermassive" (solar mass: 9e3..8.4e4). `milestones[4][0]>=8` unlocks part
+  of stage-5 strangeness (incl. Automatic Stage); `[4][1]>=8` unlocks
+  Galaxies/Intergalactic structures. Milestone progress needs LONG runs.
+- v1.16.0 `milestoneRunHold`: hold the stage reset in stages 4/5 while peak
+  mass/stardust still improve (>2%, below final-tier targets), release after a
+  12-min plateau or 3h cap. Sim from the user's real save: first held run maxed
+  the stardust milestone (tier 4->8, ~30 min); ~55-min cycles after that; mass
+  milestone crawls (solar hardcap ~2.7e4 vs tier-5 need 3e4 — rises with
+  black holes banked in-run; the v1.14 star-batch/hard-stall collapses matter
+  here, the native auto-collapse alone deadlocks at the cap).
 
 ## Open items
 - **Fine collapse-multiplier re-sweep under star batching.** 1.3x beat 2.5x and 5x

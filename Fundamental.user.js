@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.15.1
+// @version      1.16.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -68,7 +68,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.15.1';
+        return '1.16.0';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -235,6 +235,22 @@
                                 // (Source-verified against the compiled game; see
                                 // headless/build/Stage.js vaporizationResetCheck/collapseResetCheck
                                 // and Main.js's #vaporizationInput/#collapseInput 'change' handlers.)
+        milestoneRunHold: true, // stages 4/5, non-vacuum: hold the stage reset while the run's
+                                // peak solar mass / stardust are still improving, so the stage-4
+                                // MILESTONES (both needed at tier 8 to unlock Intergalactic
+                                // content + stage-5 strangeness) can actually advance. Without
+                                // this the bot reset within seconds of the Iron (element 26)
+                                // flip, capping every run at ~4 minutes of stage-4 development —
+                                // the "stuck looping 1-4" symptom. Sim-verified from a real save:
+                                // one held run maxed the stardust milestone (tier 4 -> 8) in
+                                // ~30 min; the plateau detector releases shortly after growth
+                                // stops so loops resume automatically.
+        runStallReleaseMs: 720000, // release the milestone hold after this long without a >2%
+                                // improvement in peak mass or stardust (12 min — comfortably
+                                // longer than the gaps between collapse-driven mass jumps).
+        runHoldMaxMs: 10800000, // hard cap on a single run hold (3 h). The game's own milestone
+                                // time limits expired by ~2.5 h in sims — nothing advances past
+                                // that, so never hold longer regardless of noisy growth signals.
         verbose: false,         // log every action to console
     };
 
@@ -848,8 +864,64 @@
         }
     }
 
+    // ---- Milestone-push run hold (stages 4/5, pre-Intergalactic-unlock) --------
+    // Non-vacuum endgame structure (source-verified, sim-confirmed from a real
+    // save): stage resets ADVANCE the run 1->2->3->4; buying Iron (element 26)
+    // flips the game to stage 5 and makes the stage reset legal again. Without a
+    // hold, the bot resets within seconds of the Iron flip, so each run banks
+    // ~4 minutes of stage-4 development and the stage-4 MILESTONES — "Remnants
+    // of past" (peak stardust/run) and "Supermassive" (peak solar mass/run),
+    // both needed at tier 8 to unlock ALL Intergalactic content + stage-5
+    // strangeness — never advance. A single held run from the same save maxed
+    // the stardust milestone in ~30 min. Milestones advance while the run still
+    // grows, so: hold the stage reset while peak mass/stardust keep improving,
+    // release once the run plateaus (or after a hard cap), then loop.
+    // Final-tier targets of the two stage-4 milestones (non-vacuum scaling
+    // tables, source-verified): improvements past these are irrelevant to
+    // milestone progress, so they stop counting as "still growing" — otherwise
+    // stage-5 stardust noise (it wobbles 10x tick to tick) keeps the hold
+    // engaged long after everything reachable this run has been reached.
+    const MILESTONE_DUST_MAX = 1e60;
+    const MILESTONE_MASS_MAX = 8.4e4;
+    let runPush = null; // null = idle | 'released' = done for this run | {start, peakMass, peakDust, lastImprove}
+    function shouldHoldRunReset(stage) {
+        if (!CONFIG.milestoneRunHold) return false;
+        if (stage !== 4 && stage !== 5) { runPush = null; return false; } // run restarted — re-arm
+        if (runPush === 'released') return false; // already released this run — let the reset fire
+        const now = Date.now();
+        if (!runPush) {
+            runPush = { start: now, peakMass: 0, peakDust: 0, lastImprove: now };
+            pushLog('⛰️ milestone push — holding stage reset while the run grows');
+        }
+        // Banked collapse mass (#footerStat2Span) and stardust (#footerStat1's
+        // number) — the two quantities the stage-4 milestones score. Peaks only
+        // ratchet up; a >2% improvement below the final-tier target counts as
+        // progress.
+        const mass = readNum('#footerStat2Span');
+        const dust = numFromText(textOf('footerStat1'));
+        if (mass != null && runPush.peakMass < MILESTONE_MASS_MAX && mass > runPush.peakMass * 1.02) {
+            runPush.peakMass = mass; runPush.lastImprove = now;
+        }
+        if (dust != null && runPush.peakDust < MILESTONE_DUST_MAX && dust > runPush.peakDust * 1.02) {
+            runPush.peakDust = dust; runPush.lastImprove = now;
+        }
+        if (now - runPush.start > CONFIG.runHoldMaxMs) {
+            pushLog('⛰️ run hold hit its time cap — releasing stage reset');
+            runPush = 'released';
+            return false;
+        }
+        if (now - runPush.lastImprove > CONFIG.runStallReleaseMs) {
+            pushLog('⛰️ run plateaued — releasing stage reset to loop');
+            runPush = 'released';
+            return false;
+        }
+        return true;
+    }
+
     function slowResets() {
+        const stage = activeStage();
         if (CONFIG.doStageReset && resetReady('reset1Button')) {
+            if (shouldHoldRunReset(stage)) return; // milestone push (logs its own transitions)
             if (shouldHoldStage5Reset()) {
                 if (!eventLog.length || eventLog[eventLog.length - 1].msg !== '⏳ holding Stage 5 reset') {
                     pushLog('⏳ holding Stage 5 reset');
