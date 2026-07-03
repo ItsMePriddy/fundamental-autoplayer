@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.16.0
-// @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, and enables the game's own automation + auto-stage switching.
+// @version      1.17.0
+// @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
 // @run-at       document-idle
@@ -40,6 +40,13 @@
  *      (#reset2Button) when their button text says they're ready.
  *   4. Auto-accept the "offline time" dialog that pops up whenever the tab
  *      regains focus, so it never blocks unattended play.
+ *   5. Milestone completion engine (non-vacuum): reads the game's own autosave
+ *      from localStorage to know each stage milestone's tier, per-tier time
+ *      limit, and progress counter, then holds stage resets (and temporarily
+ *      suppresses discharge/vaporize, whose resets WIPE those counters) while
+ *      a tier is still winnable this run — with per-tier retry backoff once an
+ *      attempt fails, so hopeless tiers don't drag the quark loop. See the
+ *      "Milestone completion engine" section for mechanics + sim evidence.
  *
  * Readiness is read from button text because these reset buttons are never marked
  * .disabled — when not ready they read "Next goal is ...", "Requires ...", etc.
@@ -235,22 +242,56 @@
                                 // (Source-verified against the compiled game; see
                                 // headless/build/Stage.js vaporizationResetCheck/collapseResetCheck
                                 // and Main.js's #vaporizationInput/#collapseInput 'change' handlers.)
-        milestoneRunHold: true, // stages 4/5, non-vacuum: hold the stage reset while the run's
-                                // peak solar mass / stardust are still improving, so the stage-4
-                                // MILESTONES (both needed at tier 8 to unlock Intergalactic
-                                // content + stage-5 strangeness) can actually advance. Without
-                                // this the bot reset within seconds of the Iron (element 26)
-                                // flip, capping every run at ~4 minutes of stage-4 development —
-                                // the "stuck looping 1-4" symptom. Sim-verified from a real save:
-                                // one held run maxed the stardust milestone (tier 4 -> 8) in
-                                // ~30 min; the plateau detector releases shortly after growth
-                                // stops so loops resume automatically.
-        runStallReleaseMs: 720000, // release the milestone hold after this long without a >2%
-                                // improvement in peak mass or stardust (12 min — comfortably
-                                // longer than the gaps between collapse-driven mass jumps).
-        runHoldMaxMs: 10800000, // hard cap on a single run hold (3 h). The game's own milestone
-                                // time limits expired by ~2.5 h in sims — nothing advances past
-                                // that, so never hold longer regardless of noisy growth signals.
+        milestoneAttempts: true, // non-vacuum: actively complete every stage's MILESTONES for
+                                // their final-tier unlocks (Permanent stages, the Intergalactic
+                                // structures + Galaxy researches, stage-5 strangeness). Each
+                                // pending tier must be reached within a per-tier time limit
+                                // measured against the CURRENT run's stage time, and its
+                                // progress counter is WIPED by that stage's small reset —
+                                // discharge zeroes the "produced this reset" quark total (and
+                                // spends the energy the s1 milestone scores until
+                                // strangeness[1][4]>=2), vaporize zeroes the drop total and the
+                                // simultaneous-puddle count. So while a tier's window is open
+                                // the bot holds the stage reset AND, after a ramp phase (below),
+                                // suppresses that stage's small reset — its own clicks plus the
+                                // game's native auto via toggleAuto1/toggleAuto2. Replaces
+                                // v1.16's stage-4/5-only milestoneRunHold: windows subsume it
+                                // (hold exactly while a milestone is still winnable, release the
+                                // moment none is). Sim-validated from a real save over 36 simH
+                                // (headless/milestone-probe.js, 'ship' variant): +19 tiers —
+                                // maxing 'Supermassive' (Intergalactic unlock), 'Light in the
+                                // dark', 'Satellites of Satellites', 'Fundamental Matter' and
+                                // 'A Nebula of Drops' — vs ZERO tiers ever earned without
+                                // attempts, while quarks/simH more than DOUBLED vs baseline
+                                // (the unlocks compound; 156 loops completed vs 20 for blind
+                                // attempts without backoff).
+        milestoneRampFrac: 0.3, // fraction of the tightest open window during which discharge/
+                                // vaporize still run normally before suppression starts.
+                                // Production must ramp through discharges/vaporizes first:
+                                // full-window suppression reached 1e-159% of the s1 quark
+                                // target in sim; a 0.3 ramp then a suppressed accumulation
+                                // stretch earned the tier outright. Collapse is deliberately
+                                // NOT suppressed for the stage-5 star milestone: normal
+                                // collapse cadence reached 97%+ of the star target while
+                                // suppressing collapses starved production to ~3%.
+        milestoneRetryNearMs: 1800000,  // failed-window retry cooldown when the attempt got
+                                // >=90% of the target (30 min — it'll land soon as power grows).
+        milestoneRetryFarMs: 3600000,   // cooldown for 30-90% attempts (1 h).
+        milestoneRetryHopelessMs: 10800000, // cooldown below 30% (3 h). All three double per
+                                // consecutive failure (capped below). Backoff is what makes
+                                // attempts affordable: sim WITHOUT it re-attempted every run,
+                                // cut quark income ~70%, and the near-miss tiers STILL never
+                                // landed (income too low to grow into them); with it the loop
+                                // recovers between probes and grows through the targets.
+        milestoneRetryCapMs: 21600000, // 6 h cap on any single retry cooldown.
+        runStallReleaseMs: 720000, // declare an open milestone window dead for THIS run after
+                                // this long without a >2% improvement in its tracked counter
+                                // (12 min) — its retry cooldown starts immediately, and once
+                                // every open window is dead the stage reset is released.
+        runHoldMaxMs: 10800000, // hard safety cap on a single run hold (3 h) regardless of
+                                // window math — the longest real window is ~2.4 h and shrinks
+                                // as tiers rise, so this only guards against a future game
+                                // update changing the tables underneath us.
         verbose: false,         // log every action to console
     };
 
@@ -315,6 +356,14 @@
         el.click();
     };
 
+    const setToggleOff = (id) => {
+        const el = $(id);
+        if (!el) return;
+        const t = (el.textContent || '').toUpperCase();
+        if (/\bOFF\b/.test(t)) return; // already off
+        el.click();
+    };
+
     // Confirmation toggles cycle Safe -> None -> All. Click until it reads "None".
     const setConfirmNone = (id) => {
         const el = $(id);
@@ -360,7 +409,15 @@
         if (CONFIG.enableGameAutomation) {
             setToggleOn('toggleAll');                 // master building automation
             setToggleOn('toggleVerse0');              // universe automation
-            for (let i = 0; i <= 11; i++) setToggleOn('toggleAuto' + i); // discharge/stage/upgrade autos
+            for (let i = 0; i <= 11; i++) {
+                // The milestone engine temporarily owns the discharge (1) and
+                // vaporization (2) autos: their resets wipe the milestone counters,
+                // so while an attempt is suppressing them the game's own auto must
+                // be OFF too, not just this script's clicks.
+                if (i === 1 && msCtl.suppressDischarge) { setToggleOff('toggleAuto1'); continue; }
+                if (i === 2 && msCtl.suppressVaporize) { setToggleOff('toggleAuto2'); continue; }
+                setToggleOn('toggleAuto' + i); // discharge/stage/upgrade autos
+            }
             setToggleOn('toggleNormal0');             // auto-switch active stage
         }
     }
@@ -845,9 +902,13 @@
             // Discharge: cheap and the regain is always beneficial — the standard
             // early strategy is to discharge constantly. (Don't gate on the label:
             // it can read "Next goal is X Energy" even when a discharge is available.)
-            clickIf('reset0Button');
+            // EXCEPT while a stage-1 milestone attempt is accumulating: discharge
+            // wipes the quark total and spends the energy those milestones score.
+            if (!msCtl.suppressDischarge) clickIf('reset0Button');
         } else if (s === 2) {
-            vaporizeStep();
+            // Vaporize wipes the s2 milestone counters (drop total, puddle count) —
+            // held during an attempt's accumulation phase.
+            if (!msCtl.suppressVaporize) vaporizeStep();
         } else if (s === 3) {
             // Rank: hard-gated internally by a mass requirement and capped at maxRank,
             // so this advances milestones rather than looping. Safe to attempt.
@@ -864,74 +925,289 @@
         }
     }
 
-    // ---- Milestone-push run hold (stages 4/5, pre-Intergalactic-unlock) --------
-    // Non-vacuum endgame structure (source-verified, sim-confirmed from a real
-    // save): stage resets ADVANCE the run 1->2->3->4; buying Iron (element 26)
-    // flips the game to stage 5 and makes the stage reset legal again. Without a
-    // hold, the bot resets within seconds of the Iron flip, so each run banks
-    // ~4 minutes of stage-4 development and the stage-4 MILESTONES — "Remnants
-    // of past" (peak stardust/run) and "Supermassive" (peak solar mass/run),
-    // both needed at tier 8 to unlock ALL Intergalactic content + stage-5
-    // strangeness — never advance. A single held run from the same save maxed
-    // the stardust milestone in ~30 min. Milestones advance while the run still
-    // grows, so: hold the stage reset while peak mass/stardust keep improving,
-    // release once the run plateaus (or after a hard cap), then loop.
-    // Final-tier targets of the two stage-4 milestones (non-vacuum scaling
-    // tables, source-verified): improvements past these are irrelevant to
-    // milestone progress, so they stop counting as "still growing" — otherwise
-    // stage-5 stardust noise (it wobbles 10x tick to tick) keeps the hold
-    // engaged long after everything reachable this run has been reached.
-    const MILESTONE_DUST_MAX = 1e60;
-    const MILESTONE_MASS_MAX = 8.4e4;
-    let runPush = null; // null = idle | 'released' = done for this run | {start, peakMass, peakDust, lastImprove}
-    function shouldHoldRunReset(stage) {
-        if (!CONFIG.milestoneRunHold) return false;
-        if (stage !== 4 && stage !== 5) { runPush = null; return false; } // run restarted — re-arm
-        if (runPush === 'released') return false; // already released this run — let the reset fire
-        const now = Date.now();
-        if (!runPush) {
-            runPush = { start: now, peakMass: 0, peakDust: 0, lastImprove: now };
-            pushLog('⛰️ milestone push — holding stage reset while the run grows');
+    // ---- Milestone completion engine (non-vacuum, all stages) ------------------
+    // Non-vacuum milestones are the real progression gates: each stage has two,
+    // each with 6-8 tiers, and the FINAL tier of each grants a permanent unlock
+    // (Permanent Microworld/Submerged/Accretion, the Intergalactic structures,
+    // Galaxy researches, stage-5 strangeness like 'Strange gain', the auto-stage-
+    // to-Intergalactic toggle). Mechanics, source-verified against the compiled
+    // game (headless/build/Stage.js assignMilestoneInformation/milestoneCheck,
+    // Reset.js reset):
+    //   - A tier is awarded automatically the moment its counter reaches the
+    //     need value WHILE the run's stage time is still under a per-tier time
+    //     limit. The limit SHRINKS as tiers rise (late tiers demand fast runs).
+    //   - "This reset" counters are wiped by the stage's own SMALL reset:
+    //     discharge calls reset('discharge',[1..5]) which zeroes building totals
+    //     (s1 quark milestone) and spends current energy while strangeness[1][4]<2
+    //     (s1 energy milestone); vaporization zeroes the s2 drop total and the
+    //     simultaneous-puddle count; collapse zeroes the s5 self-made star count.
+    //   - So the bot: (a) holds the stage reset while any pending tier's window
+    //     is open, (b) lets discharge/vaporize run for the first milestoneRampFrac
+    //     of the window (production MUST ramp first — sim: full suppression gets
+    //     nowhere), then suppresses them so the counter can accumulate, (c) does
+    //     NOT suppress collapse (sim: collapse cadence feeds the star milestone,
+    //     suppressing it starves production), and (d) on a failed/stalled window
+    //     starts a per-tier retry cooldown so the quark loop recovers.
+    // All game state comes from the game's own autosave (localStorage
+    // 'fundamentalSave', btoa(JSON), saved every 20 s) — the milestone DOM spans
+    // only update while the Milestones subtab is open, so they can't be polled.
+    // Validated end-to-end with headless/milestone-probe.js from a real save:
+    // 'ship' variant earned +19 tiers in 36 simH (5 milestones maxed) with MORE
+    // than double baseline quark income; every design choice above flips a probe
+    // variant that measurably loses (see the probe's variant table).
+    // Scaling tables + time-limit formula for game v0.2.9 (Player.ts
+    // milestonesInfo[].scaling, Stage.ts assignMilestoneInformation non-vacuum
+    // branch). If a game update changes these, re-verify against the compiled
+    // build and re-run the probe.
+    const MS_SCALING = {
+        1: [[1e152, 1e158, 1e164, 1e170, 1e178, 1e190], [23800, 24600, 25800, 27000, 28200, 29600]],
+        2: [[1e30, 1e32, 1e34, 1e36, 1e38, 1e40, 1e44], [1500, 2300, 3100, 3900, 4700, 5500, 6400]],
+        3: [[1e32, 1e34, 1e36, 1e38, 1e40, 1e42, 1e45], [24, 28, 32, 36, 40, 44, 50]],
+        4: [[1e48, 1e49, 1e50, 1e52, 1e54, 1e56, 1e58, 1e60], [9000, 12000, 16000, 22000, 30000, 42000, 60000, 84000]],
+        5: [[1460, 1540, 1620, 1700, 1780, 1860, 1940, 2020], [1, 2, 4, 6, 10, 14, 18, 22]],
+    };
+    const MS_TIME_BASE = { 1: 14400, 2: 28800, 3: 43200, 4: 57600 };
+    const MS_TIME_K = { 1: [3, 11], 2: [7, 23], 3: [11, 35], 4: [15, 47] };
+    const MS_NAMES = {
+        1: ['Fundamental Matter', 'Energized'],
+        2: ['A Nebula of Drops', 'Just a bigger Puddle'],
+        3: ['Cluster of Mass', 'Satellites of Satellites'],
+        4: ['Remnants of past', 'Supermassive'],
+        5: ['Light in the dark', 'End of Greatness'],
+    };
+    // Per-tier time limit in seconds (stage time). Mirrors the game's formula.
+    function msLimitSec(s, i, lvl, tree00) {
+        const len = MS_SCALING[s][i].length;
+        const pct = lvl / (len - 1);
+        let t;
+        if (s === 5) t = i === 0 ? 3600 / (pct * 2 + 1) : 1200;
+        else t = MS_TIME_BASE[s] / Math.pow(pct * MS_TIME_K[s][i] + 1, pct);
+        return tree00 ? t / 4 : t;
+    }
+    // The milestone's progress counter, read from the autosave. Mirrors
+    // milestoneGetValue with two save-friendly proxies: s4[1] uses BANKED solar
+    // mass (the projected value isn't saved; banking happens every collapse so
+    // it tracks closely) and s5[0] sums self-made stage-4 structures (trueStars
+    // isn't saved; both are incremented per buy and zeroed per collapse).
+    function msValueFromSave(sv, s, i) {
+        const B = sv.buildings || [];
+        const N = (x) => { const v = Number(x); return Number.isFinite(v) ? v : null; };
+        if (s === 1) return i === 0 ? N(B[1]?.[0]?.total) : N(sv.discharge?.energy);
+        if (s === 2) return i === 0 ? N(B[2]?.[1]?.total) : N(B[2]?.[2]?.current);
+        if (s === 3) return i === 0 ? N(B[3]?.[0]?.total) : (B[3]?.[4]?.true || 0) + (B[3]?.[5]?.true || 0);
+        if (s === 4) return i === 0 ? N(B[4]?.[0]?.total) : N(sv.collapse?.mass);
+        if (s === 5) {
+            if (i === 0) { let t = 0; for (let b = 1; b <= 5; b++) t += B[4]?.[b]?.true || 0; return t; }
+            return B[5]?.[3]?.true || 0;
         }
-        // Banked collapse mass (#footerStat2Span) and stardust (#footerStat1's
-        // number) — the two quantities the stage-4 milestones score. Peaks only
-        // ratchet up; a >2% improvement below the final-tier target counts as
-        // progress.
-        const mass = readNum('#footerStat2Span');
-        const dust = numFromText(textOf('footerStat1'));
-        if (mass != null && runPush.peakMass < MILESTONE_MASS_MAX && mass > runPush.peakMass * 1.02) {
-            runPush.peakMass = mass; runPush.lastImprove = now;
-        }
-        if (dust != null && runPush.peakDust < MILESTONE_DUST_MAX && dust > runPush.peakDust * 1.02) {
-            runPush.peakDust = dust; runPush.lastImprove = now;
-        }
-        if (now - runPush.start > CONFIG.runHoldMaxMs) {
-            pushLog('⛰️ run hold hit its time cap — releasing stage reset');
-            runPush = 'released';
-            return false;
-        }
-        if (now - runPush.lastImprove > CONFIG.runStallReleaseMs) {
-            pushLog('⛰️ run plateaued — releasing stage reset to loop');
-            runPush = 'released';
-            return false;
-        }
-        return true;
+        return null;
+    }
+    const fmtMsVal = (v) => v == null ? '?' : (Math.abs(v) >= 1e6 ? v.toExponential(2) : Math.round(v).toLocaleString('en-US'));
+
+    // Autosave poll (cached; parsing 8 KB of base64 JSON every tick would be waste).
+    let msSaveCache = null;
+    let msSaveAt = 0;
+    function readGameSave() {
+        if (Date.now() - msSaveAt < 5000) return msSaveCache;
+        msSaveAt = Date.now();
+        try {
+            const raw = localStorage.getItem('fundamentalSave');
+            msSaveCache = raw ? JSON.parse(atob(raw)) : null;
+        } catch (e) { msSaveCache = null; }
+        return msSaveCache;
     }
 
+    // Retry backoff, persisted across reloads. Key: s<stage>i<index>t<tier>.
+    const MS_BACKOFF_KEY = 'fbMilestoneBackoff';
+    let msBackoff = {};
+    try { msBackoff = JSON.parse(localStorage.getItem(MS_BACKOFF_KEY) || '{}') || {}; } catch (e) { msBackoff = {}; }
+    const msSaveBackoff = () => { try { localStorage.setItem(MS_BACKOFF_KEY, JSON.stringify(msBackoff)); } catch (e) { /* quota — retry state is best-effort */ } };
+
+    // Engine state. msCtl is read by applySettings/fastResets/slowResets each tick.
+    let msCtl = { hold: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
+    let msWindows = {};        // key -> { peak, lastImprove, need, lvl, s, i }
+    let msRunDead = {};        // tiers given up on for the CURRENT run
+    let msPrevEst = Infinity;  // last estimated stage time (new-run detection)
+    let msPrevTiers = null;    // last seen player.milestones (award detection)
+    let msLastTick = 0;        // detects hidden-tab gaps (stall clocks must not run then)
+    let lastStageResetTs = 0;  // set when this script fires a stage/end reset
+
+    // Estimated CURRENT stage time: the autosave's counter plus wall time since
+    // it was written. If this script reset the stage more recently than the
+    // save, the save describes the PREVIOUS run — count from our own click so a
+    // fresh run isn't skipped during the (up to 20 s) autosave lag.
+    function estStageTime(sv) {
+        const saved = sv.time?.stage ?? 0;
+        const savedAt = sv.time?.updated ?? Date.now();
+        if (lastStageResetTs && savedAt < lastStageResetTs) return (Date.now() - lastStageResetTs) / 1000;
+        return saved + Math.max(0, Date.now() - savedAt) / 1000;
+    }
+
+    function msCloseWindow(key, w, earned, why) {
+        delete msWindows[key];
+        if (earned) return; // award already logged; backoff entries cleared there
+        const ratio = w.need > 0 && w.peak > 0 ? w.peak / w.need : 0;
+        const fails = (msBackoff[key]?.fails || 0) + 1;
+        const base = ratio >= 0.9 ? CONFIG.milestoneRetryNearMs
+            : ratio >= 0.3 ? CONFIG.milestoneRetryFarMs
+            : CONFIG.milestoneRetryHopelessMs;
+        const cool = Math.min(base * Math.pow(2, fails - 1), CONFIG.milestoneRetryCapMs);
+        msBackoff[key] = { fails, nextTryAt: Date.now() + cool };
+        msSaveBackoff();
+        pushLog(`⛰️ '${MS_NAMES[w.s][w.i]}' tier ${w.lvl + 1} ${why} at ${(ratio * 100).toFixed(0)}% — retry in ${fmtDur(cool / 1000)}`);
+    }
+
+    function milestoneEngine() {
+        const prev = msCtl;
+        msCtl = { hold: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
+        if (!CONFIG.milestoneAttempts) return;
+        const sv = readGameSave();
+        // Out of scope: no save yet, vacuum (different milestone system), inside a
+        // challenge, pre-strangeness progression, or the inflation-tree upgrade
+        // that removes time limits entirely (milestones then land in normal play).
+        if (!sv || sv.inflation?.vacuum || sv.challenges?.active != null ||
+            (sv.progress?.main ?? 0) < 11 || (sv.tree?.[0]?.[4] ?? 0) >= 1) return;
+
+        // The game clock freezes while the tab is hidden, but the stall clocks
+        // below are wall-time — shift them forward by any gap in engine ticks so
+        // a backgrounded tab doesn't fail every open window on return.
+        const nowTs = Date.now();
+        if (msLastTick && nowTs - msLastTick > 5000) {
+            const gap = nowTs - msLastTick;
+            for (const key of Object.keys(msWindows)) msWindows[key].lastImprove += gap;
+        }
+        msLastTick = nowTs;
+
+        // Award detection (tier rose between save polls).
+        const tiers = sv.milestones || [];
+        if (msPrevTiers) {
+            for (let s = 1; s <= 5; s++) for (let i = 0; i < 2; i++) {
+                const now = tiers[s]?.[i] ?? 0;
+                if (now > (msPrevTiers[s]?.[i] ?? 0)) {
+                    const max = MS_SCALING[s][i].length;
+                    pushLog(`🏁 milestone '${MS_NAMES[s][i]}' tier ${now}/${max}${now >= max ? ' — MAXED, final unlock earned' : ''}`);
+                    for (const key of Object.keys(msBackoff)) {
+                        if (key.startsWith(`s${s}i${i}t`)) delete msBackoff[key]; // stale tiers
+                    }
+                    msSaveBackoff();
+                }
+            }
+        }
+        msPrevTiers = tiers;
+
+        // New-run detection: a stage reset drops stage time from minutes to ~0.
+        // The 30s threshold absorbs harmless small dips (a fresh autosave can
+        // read a few seconds BEHIND the wall-clock estimate when the game's rAF
+        // clock lagged) without missing any real reset.
+        const est = estStageTime(sv);
+        if (est < msPrevEst - 30) {
+            for (const key of Object.keys(msWindows)) {
+                const w = msWindows[key];
+                msCloseWindow(key, w, (tiers[w.s]?.[w.i] ?? 0) > w.lvl, 'ended with the run');
+            }
+            msRunDead = {};
+        }
+        msPrevEst = est;
+
+        // Pending tiers for the current run: the game scores min(current,4), plus
+        // stage 5 alongside 4 (each s5 index gated on its s4 twin being maxed).
+        const cur = Math.min(sv.stage?.current ?? 0, 4);
+        if (cur < 1) return;
+        const stages = cur === 4 ? [4, 5] : [cur];
+        const tree00 = (sv.tree?.[0]?.[0] ?? 0) === 1;
+        const open = [];
+        for (const s of stages) {
+            for (let i = 0; i < 2; i++) {
+                const lvl = tiers[s]?.[i] ?? 0;
+                if (lvl >= MS_SCALING[s][i].length) continue;              // maxed
+                if (s === 5 && (tiers[4]?.[i] ?? 0) < 8) continue;         // s5 gate
+                const key = `s${s}i${i}t${lvl}`;
+                if (msRunDead[key]) continue;                              // gave up this run
+                const bk = msBackoff[key];
+                if (bk && Date.now() < bk.nextTryAt) continue;             // cooling down
+                const limit = msLimitSec(s, i, lvl, tree00);
+                if (est > limit) continue;                                 // window already shut
+                open.push({ s, i, lvl, key, limit, need: MS_SCALING[s][i][lvl] });
+            }
+        }
+
+        // Track progress + stall inside each open window.
+        const openKeys = new Set(open.map((p) => p.key));
+        for (const key of Object.keys(msWindows)) {
+            if (openKeys.has(key)) continue;
+            const w = msWindows[key];
+            msCloseWindow(key, w, (tiers[w.s]?.[w.i] ?? 0) > w.lvl, 'window closed');
+        }
+        for (const p of open) {
+            const w = msWindows[p.key] || (msWindows[p.key] = {
+                peak: 0, lastImprove: Date.now(), need: p.need, lvl: p.lvl, s: p.s, i: p.i,
+            });
+            const val = msValueFromSave(sv, p.s, p.i);
+            if (val != null && val > w.peak * 1.02) w.lastImprove = Date.now();
+            if (val != null && val > w.peak) w.peak = val;
+            if (Date.now() - w.lastImprove > CONFIG.runStallReleaseMs) {
+                msRunDead[p.key] = true;
+                msCloseWindow(p.key, w, false, 'stalled');
+            }
+        }
+        const live = open.filter((p) => !msRunDead[p.key]);
+        if (!live.length) return;
+
+        // Suppression: hold discharge/vaporize once the ramp share of the
+        // tightest open window has elapsed. Collapse intentionally untouched.
+        const s1 = live.filter((p) => p.s === 1);
+        if (s1.length && est > CONFIG.milestoneRampFrac * Math.min(...s1.map((p) => p.limit))) {
+            msCtl.suppressDischarge = true;
+        }
+        const s2 = live.filter((p) => p.s === 2);
+        if (s2.length && est > CONFIG.milestoneRampFrac * Math.min(...s2.map((p) => p.limit))) {
+            msCtl.suppressVaporize = true;
+        }
+        msCtl.hold = est * 1000 < CONFIG.runHoldMaxMs;
+
+        // HUD line + transition logs for the nearest-deadline live window.
+        const next = live.reduce((a, b) => (a.limit < b.limit ? a : b));
+        const w = msWindows[next.key];
+        msCtl.hudLine = `⛰️ '${MS_NAMES[next.s][next.i]}' ${next.lvl + 1}/${MS_SCALING[next.s][next.i].length}: `
+            + `${fmtMsVal(w?.peak)} / ${fmtMsVal(next.need)} · ${fmtDur(Math.max(0, next.limit - est))} left`
+            + (msCtl.suppressDischarge ? ' · discharge held' : '')
+            + (msCtl.suppressVaporize ? ' · vaporize held' : '');
+        if (msCtl.hold && !prev.hold) {
+            pushLog(`⛰️ milestone push — '${MS_NAMES[next.s][next.i]}' tier ${next.lvl + 1} within ${fmtDur(next.limit)}`);
+        }
+        if (msCtl.suppressDischarge && !prev.suppressDischarge) pushLog('⛰️ ramp done — holding discharge to accumulate');
+        if (msCtl.suppressVaporize && !prev.suppressVaporize) pushLog('⛰️ ramp done — holding vaporize to accumulate');
+    }
+
+    // Console diagnostics: window/backoff state at a glance.
+    const milestoneReport = () => {
+        const sv = readGameSave();
+        const state = {
+            config: CONFIG.milestoneAttempts,
+            tiers: sv?.milestones ?? null,
+            control: msCtl,
+            windows: msWindows,
+            backoff: Object.fromEntries(Object.entries(msBackoff).map(([k, v]) => [
+                k, { fails: v.fails, retryIn: fmtDur(Math.max(0, v.nextTryAt - Date.now()) / 1000) },
+            ])),
+        };
+        console.log('[Fundamental] milestone state:', state);
+        return state;
+    };
+
     function slowResets() {
-        const stage = activeStage();
         if (CONFIG.doStageReset && resetReady('reset1Button')) {
-            if (shouldHoldRunReset(stage)) return; // milestone push (logs its own transitions)
+            if (msCtl.hold) return; // milestone window open (engine logs its own transitions)
             if (shouldHoldStage5Reset()) {
                 if (!eventLog.length || eventLog[eventLog.length - 1].msg !== '⏳ holding Stage 5 reset') {
                     pushLog('⏳ holding Stage 5 reset');
                 }
                 return;
             }
-            clickIf('reset1Button'); log('stage reset');
+            if (clickIf('reset1Button')) { lastStageResetTs = Date.now(); log('stage reset'); }
         }
         if (CONFIG.doEndReset && resetReady('reset2Button')) {
-            clickIf('reset2Button'); log('end reset');
+            if (clickIf('reset2Button')) { lastStageResetTs = Date.now(); log('end reset'); }
         }
     }
 
@@ -1022,6 +1298,7 @@
                 return;
             }
             acceptOfflineDialog();
+            milestoneEngine();   // sets msCtl BEFORE the passes below consume it
             applySettings();
             configureNativeAutomation();
             // Resets BEFORE purchases. Order matters for stage 2: until
@@ -1085,6 +1362,11 @@
         running = false;
         if (mainTimer) clearInterval(mainTimer);
         mainTimer = null;
+        // Hand the discharge/vaporize autos back to the game if an attempt was
+        // mid-suppression — a paused script shouldn't leave them disabled.
+        if (msCtl.suppressDischarge) setToggleOn('toggleAuto1');
+        if (msCtl.suppressVaporize) setToggleOn('toggleAuto2');
+        msCtl = { hold: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
         suppressNextDownload = false;
         if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
         suppressDownloadTimer = null;
@@ -1527,7 +1809,8 @@
         el.fbTargetValue.textContent = model.targetValue;
         el.fbTargetValue.className = `fb-target-value${model.ready ? ' ready' : ''}`;
         el.fbTargetDetail.textContent = model.targetDetail;
-        el.fbSignal.textContent = model.signal;
+        // A live milestone attempt outranks the stage's default signal line.
+        el.fbSignal.textContent = msCtl.hudLine || model.signal;
         el.fbLastLabel.textContent = model.lastLabel;
         el.fbLastValue.textContent = model.lastValue;
         el.fbRunBtn.textContent = running ? 'Pause script' : 'Resume script';
@@ -1546,6 +1829,7 @@
             CONFIG,
             report,
             collapseReport,
+            milestoneReport,
             cycles: cycleLog,
             collapses: collapseLog,
             log: eventLog,

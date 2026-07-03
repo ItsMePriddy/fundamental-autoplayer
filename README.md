@@ -35,6 +35,12 @@ globals):
 - Pre-configures the game's own auto-vaporize / auto-collapse threshold inputs, so
   once the matching "Automatic" strangeness upgrades are bought, the game's native
   automation runs with the script's tuned values instead of untouched defaults.
+- Actively completes stage **Milestones** (non-vacuum) for their final-tier unlocks:
+  while a milestone tier is still winnable this run it holds the stage reset and,
+  after a ramp phase, pauses discharge/vaporize (whose resets wipe the milestone
+  counters) so the counter can accumulate. Attempts that fail or stall back off on
+  a per-tier cooldown, so hopeless targets never drag the quark loop — they're
+  retried later once the script has grown into them.
 - Auto-accepts the offline-time dialog.
 
 ## Important: keep the tab in the foreground
