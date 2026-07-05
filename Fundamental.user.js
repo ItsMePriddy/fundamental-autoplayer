@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.18.0
+// @version      1.18.1
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -75,7 +75,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.18.0';
+        return '1.18.1';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -1160,7 +1160,21 @@
         if (s === 1) return i === 0 ? N(B[1]?.[0]?.total) : N(sv.discharge?.energy);
         if (s === 2) return i === 0 ? N(B[2]?.[1]?.total) : N(B[2]?.[2]?.current);
         if (s === 3) return i === 0 ? N(B[3]?.[0]?.total) : (B[3]?.[4]?.true || 0) + (B[3]?.[5]?.true || 0);
-        if (s === 4) return i === 0 ? N(B[4]?.[0]?.total) : N(sv.collapse?.mass);
+        if (s === 4) {
+            if (i === 0) return N(B[4]?.[0]?.total);
+            // Supermassive tracks live solar mass (collapseInfo.newMass), NOT the
+            // banked high-water mark (collapse.mass).  The game's milestoneGetValue
+            // returns newMass — the live production value — while collapse.mass only
+            // updates on collapse.  Reading collapse.mass makes the bot think the
+            // counter is frozen (stalled) when it's actually growing, causing it to
+            // hold the stage indefinitely for a target that's progressing fine.
+            // Prefer the DOM's live value; fall back to save if unavailable.
+            const domMass = readNum('#mainCapS5 > span')   // stage 5: live newMass
+                         || readNum('#footerStat2Span')       // stage 4: banked (updates on collapse)
+                         || null;
+            if (domMass != null) return domMass;
+            return N(sv.collapse?.mass);
+        }
         if (s === 5) {
             if (i === 0) { let t = 0; for (let b = 1; b <= 5; b++) t += B[4]?.[b]?.true || 0; return t; }
             return B[5]?.[3]?.true || 0;
@@ -1306,10 +1320,29 @@
         for (const p of open) {
             const w = msWindows[p.key] || (msWindows[p.key] = {
                 peak: 0, lastImprove: Date.now(), need: p.need, lvl: p.lvl, s: p.s, i: p.i,
+                startTs: Date.now(), startPeak: 0,
             });
             const val = msValueFromSave(sv, p.s, p.i);
             if (val != null && val > w.peak * 1.02) w.lastImprove = Date.now();
             if (val != null && val > w.peak) w.peak = val;
+            if (!w.startPeak && val != null) w.startPeak = val;  // seed on first read
+            // Rate-based reachability check: if the counter IS growing but won't
+            // reach the target before the window closes, release immediately rather
+            // than holding for the full stall timeout (12 min) or window expiry.
+            // This prevents the bot from pinning a stage for a target that's hours
+            // away at current production rate.
+            const elapsed = (Date.now() - w.startTs) / 1000;
+            if (elapsed > 30 && val != null && w.peak > w.startPeak) {
+                const rate = (w.peak - w.startPeak) / elapsed;  // per second
+                const remaining = p.need - w.peak;
+                const projectedSec = rate > 0 ? remaining / rate : Infinity;
+                const windowRemaining = p.limit - est;
+                if (projectedSec > windowRemaining * 1.5) {
+                    msRunDead[p.key] = true;
+                    msCloseWindow(p.key, w, false, `unreachable at current rate (${fmtDur(projectedSec)} vs ${fmtDur(windowRemaining)} left)`);
+                    continue;
+                }
+            }
             if (Date.now() - w.lastImprove > CONFIG.runStallReleaseMs) {
                 msRunDead[p.key] = true;
                 msCloseWindow(p.key, w, false, 'stalled');
