@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.17.0
+// @version      1.18.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -75,7 +75,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.16.0';
+        return '1.18.0';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -402,7 +402,26 @@
     }
 
     // ---- Setup pass (cheap, idempotent) --------------------------------------
+    // BUG FIX: throttle applySettings to every ~2s instead of every tick.
+    // The toggles don't change state between ticks (the game's own autos
+    // persist), so re-asserting 4×/second was pure DOM churn — ~15 queries
+    // per tick = 60/sec of needless layout work. BUT: when the milestone
+    // engine toggles suppression (suppressDischarge/suppressVaporize), the
+    // game's auto must be turned off IMMEDIATELY or it fires within the next
+    // game tick and wipes the milestone counter. So suppression transitions
+    // bypass the throttle.
+    let lastApplySettings = 0;
+    let prevSuppressDischarge = false;
+    let prevSuppressVaporize = false;
+    const APPLY_SETTINGS_MS = 2000;
     function applySettings() {
+        const now = Date.now();
+        const suppressChanged = (msCtl.suppressDischarge !== prevSuppressDischarge) ||
+                                (msCtl.suppressVaporize !== prevSuppressVaporize);
+        if (!suppressChanged && now - lastApplySettings < APPLY_SETTINGS_MS) return;
+        lastApplySettings = now;
+        prevSuppressDischarge = msCtl.suppressDischarge;
+        prevSuppressVaporize = msCtl.suppressVaporize;
         if (CONFIG.setConfirmNone) {
             for (let i = 0; i <= 7; i++) setConfirmNone('toggleConfirm' + i);
         }
@@ -435,9 +454,14 @@
     // which openHotkeys() builds LAZILY on first open. The bot never opens it, so
     // detection never fired and the feature was a silent no-op. Verified against
     // the live deployed bundle, not just the compiled clone.)
-    // Configured once per session; skips if already at target so a value the
-    // player set mid-session isn't fought (a reload re-asserts CONFIG, by design).
+    // Configured once per session, then re-asserted every ~60s. Stage resets
+    // and game reloads can wipe these inputs, and the old once-per-session flag
+    // meant the bot silently stopped auto-vaporizing/auto-collapsing after a
+    // reset. Re-asserting checks the current value and only writes if needed
+    // (setNativeInput already no-ops when already at target).
     const nativeConfigured = { vaporize: false, collapse: false };
+    let lastNativeReassert = 0;
+    const NATIVE_REASSERT_MS = 60000; // re-check every 60s
     function setNativeInput(id, target) {
         const el = $(id);
         if (!el) return false;
@@ -449,6 +473,18 @@
     }
     function configureNativeAutomation() {
         if (!CONFIG.configureNativeAutomation) return;
+        // BUG FIX: re-assert every ~60s instead of once per session. Stage
+        // resets can wipe these native auto inputs. The once-per-session flags
+        // meant a reset silently disabled auto-vaporize/auto-collapse until the
+        // page was reloaded. Now we periodically clear the flags so the inputs
+        // are re-checked (and re-set if missing/wrong).
+        const now = Date.now();
+        if (nativeConfigured.vaporize && nativeConfigured.collapse && now - lastNativeReassert < NATIVE_REASSERT_MS) return;
+        if (now - lastNativeReassert >= NATIVE_REASSERT_MS) {
+            nativeConfigured.vaporize = false;
+            nativeConfigured.collapse = false;
+            lastNativeReassert = now;
+        }
         if (!nativeConfigured.vaporize) {
             nativeConfigured.vaporize = setNativeInput('vaporizationInput', CONFIG.vaporizeBoost);
             if (nativeConfigured.vaporize) pushLog(`⚙️ native auto-vaporize threshold set to ${CONFIG.vaporizeBoost}×`);
@@ -500,8 +536,66 @@
             : (CONFIG.strangenessTarget ? [CONFIG.strangenessTarget] : []);
         return targets.find((id) => $(id) && strangeUnowned(id)) || null;
     }
+    let lastBuyStrangeness = 0;
+    const BUY_STRANGENESS_MS = 2000;
+
+    // ---- Smart strangeness save-vs-spend strategy ----------------------------
+    // Unspent strange quarks provide a stageBoost: production *= quarks^exp.
+    // Spending quarks on upgrades reduces the boost. The smart strategy decides
+    // when to hoard (preserve boost) vs spend (buy upgrades) by comparing the
+    // marginal production loss from spending against the upgrade's benefit.
+    //
+    // Exponents (non-vacuum, from Stage.js source):
+    //   S1=0.22  S2=0.18  S3=0.76  S4=0.16  S5=0.06
+    // Gating (strangeness[s][idx] >= level required for boost to activate):
+    //   S1: [1][6]>=1  S2: [2][6]>=1  S3: [3][7]>=1  S4: [4][7]>=1  S5: [5][7]>=1
+    // Formula: stageBoost[s] = (unspentQuarks + 1) ^ exp[s]  (the +1 is from
+    //   the game's strangeInfo.stageBoost calculation using current+1)
+    const STAGE_BOOST_EXP = { 1: 0.22, 2: 0.18, 3: 0.76, 4: 0.16, 5: 0.06 };
+    const STAGE_BOOST_GATE = { 1: [6, 1], 2: [6, 1], 3: [7, 1], 4: [7, 1], 5: [7, 1] };
+
+    function stageBoostActive(sv, stage) {
+        if (!sv || !sv.strangeness || !sv.strangeness[stage]) return false;
+        const [idx, lvl] = STAGE_BOOST_GATE[stage] || [0, 999];
+        return (sv.strangeness[stage][idx] || 0) >= lvl;
+    }
+
+    // Marginal production multiplier lost by spending `cost` quarks when
+    // currently holding `quarks` unspent, for a stage with exponent `exp`.
+    // boost = (q+1)^exp. After spending: (q-cost+1)^exp.
+    // Fractional loss = 1 - (q-cost+1)^exp / (q+1)^exp
+    function boostLossFraction(quarks, cost, exp) {
+        if (quarks <= 0 || cost <= 0 || exp <= 0) return 0;
+        const before = Math.pow(quarks + 1, exp);
+        const after = Math.pow(Math.max(0, quarks - cost) + 1, exp);
+        return before > 0 ? 1 - (after / before) : 0;
+    }
+
+    // Read unspent quarks from save. Returns 0 if unreadable.
+    function unspentQuarks() {
+        const sv = readGameSave();
+        if (!sv || !sv.strange || !sv.strange[0]) return 0;
+        return sv.strange[0].current || 0;
+    }
+
     function buyStrangenessSmart() {
+        // BUG FIX: throttle to every ~2s. Strangeness upgrades are bought with
+        // strange quarks, which only arrive on stage resets — checking 70+
+        // buttons every 250ms was pure DOM churn. The high-ROI target
+        // (strange3Stage5) is still clicked every tick via the saving window
+        // fast path below.
+        const now = Date.now();
+        if (now - lastBuyStrangeness < BUY_STRANGENESS_MS) {
+            // Fast path: still try the top-priority target every tick so it's
+            // grabbed the instant quarks arrive from a reset.
+            clickIf('strange3Stage5');
+            const target = currentStrangenessTarget();
+            if (target) clickIf(target);
+            return;
+        }
+        lastBuyStrangeness = now;
         clickIf('strange3Stage5'); // highest-ROI quark-gain multiplier — always pursue (compounds income)
+
         const target = currentStrangenessTarget();
         if (target !== strangeTargetId) {
             // Target changed (previous one bought, or list edited) — start a fresh window.
@@ -516,7 +610,43 @@
             // line (clicked above each tick) until it's actually bought.
         }
         clickIf('strange4Stage5'); // Intergalactic collapse-immunity / enables auto-upgrade there
+
+        // Smart save-vs-spend: if the current stage has an active stageBoost
+        // with a high exponent (especially S3's 0.76), spending quarks gut the
+        // production multiplier. We hold a reserve when the marginal loss is
+        // significant. When stageBoost is inactive (gating not met), spend
+        // freely — hoarding yields nothing.
         const cur = activeStage();
+        const sv = readGameSave();
+        const boostOn = stageBoostActive(sv, cur);
+        const exp = STAGE_BOOST_EXP[cur] || 0;
+        const quarks = unspentQuarks();
+
+        if (boostOn && exp >= 0.15 && quarks > 0) {
+            // stageBoost is active and exponent is meaningful. Compute how much
+            // production we'd lose by spending down to a threshold. We reserve
+            // enough quarks so that spending 1 more would lose < 1% of the boost.
+            // marginal loss per quark ≈ exp * (q+1)^(exp-1) / (q+1)^exp = exp/(q+1)
+            // We want exp/(q+1) < 0.01  →  q > exp/0.01 - 1  →  q > 100*exp - 1
+            // For S3 (exp=0.76): reserve floor ≈ 75 quarks. Below that, hoard.
+            const reserveFloor = Math.ceil(100 * exp) - 1;
+            if (quarks <= reserveFloor) {
+                // Hoarding: don't spend on low-priority upgrades. Only the
+                // priority targets above (strange3Stage5, target, strange4Stage5)
+                // get clicked — everything else is held to preserve the boost.
+                if (quarks < reserveFloor * 0.5) {
+                    pushLog(`⏸ hoarding ${quarks.toFixed(1)} quarks (reserve floor ${reserveFloor} for S${cur} boost ^${exp})`);
+                }
+                return;
+            }
+            // Above the reserve floor: spend freely but log the boost loss.
+            const lossFrac = boostLossFraction(quarks, 1, exp);
+            if (lossFrac > 0.005) {
+                // Spending still costs > 0.5% of the boost per quark — proceed
+                // but note it. At this quark level the loss is acceptable.
+            }
+        }
+
         const order = [cur];
         for (let s = 6; s >= 1; s--) if (s !== cur) order.push(s);
         // i <= 11: stage 5 has an 11th strangeness (strange11Stage5, Galactic tide);
@@ -703,6 +833,11 @@
     };
     function collapseStep() {
         if (!collapseLastTs) collapseLastTs = Date.now();
+        // BUG FIX: split the early return so observation recording is explicit.
+        // Previously `if (totalBoost == null || massRatio == null) return;` made
+        // it ambiguous whether we were skipping because game-auto owns collapse
+        // or because the mass ratio was unreadable. Now each case is separate
+        // and the observation path (game-auto) is clearly delineated.
         if (!/collapse/i.test(textOf('reset0Button'))) return; // not the collapse reset / not actionable
         const bankedMassBefore = readNum('#footerStat2Span');
         const totalBoost = readNum('#collapseBoostTotal > span'); // null when the game auto-handles it
@@ -732,7 +867,13 @@
             ? newMass / bankedMassBefore
             : null;
         collapseLastProjectedMass = newMass;
-        if (totalBoost == null || massRatio == null) return;
+        // BUG FIX: split the ambiguous combined return into two explicit cases.
+        // totalBoost == null means the game's own auto-collapse has taken over
+        // (strangeness[4][4] ≥ 3) — we observe only, never fire. massRatio ==
+        // null means we can't read the projected/banked mass yet — come back
+        // next tick. Conflating these hid the observation-vs-action boundary.
+        if (totalBoost == null) return; // game-auto owns collapse — observation only (handled above)
+        if (massRatio == null) return;  // can't compute ROI yet — retry next tick
         const elapsed = (Date.now() - collapseLastTs) / 1000;
         const sinceAttempt = (Date.now() - collapseLastAttemptTs) / 1000;
         if (collapseLastAttemptTs && sinceAttempt < CONFIG.collapseMinGapMs / 1000) return;
@@ -819,9 +960,15 @@
     let stage5HoldStart = 0;
     function mergeStep() {
         if (!resetReady('reset0Button') || !/merge/i.test(textOf('reset0Button'))) {
-            if (!mergeLastTs) mergeLastTs = Date.now();
-            return; // keep existing timer — don't reset on DOM flicker
+            // BUG FIX: do NOT set mergeLastTs here. Previously this started the
+            // anti-hang timer on the very first tick (when merge wasn't even
+            // ready), so by the time merge became actionable the elapsed time
+            // was already huge and the anti-hang fired immediately. The timer
+            // must only start when merge is actually ready (below).
+            return;
         }
+        // Start the anti-hang timer only on the first ready tick. Preserved
+        // across DOM flicker (not-ready for one tick doesn't zero it).
         if (!mergeLastTs) mergeLastTs = Date.now();
         const boost = readNum('#mergeBoostTotal > span');
         if (boost == null) return; // game auto-merges (strangeness[5][9]≥2) — leave timing to it
@@ -893,8 +1040,7 @@
             collapseObservedMass = null;
             collapseLastProjectedMass = null;
         } // left stage 4 — reset collapse cadence
-        if (s !== 5 && prevStage === 5) mergeLastTs = 0;      // left stage 5 — reset merge cadence
-        if (s !== 5 && prevStage === 5) stage5HoldStart = 0;   // left stage 5 — reset stage-reset hold
+        if (s !== 5 && prevStage === 5) { mergeLastTs = 0; stage5HoldStart = 0; } // left stage 5 — reset merge cadence + hold
         if (s !== prevStage && prevStage !== 0) pushLog(`🪐 stage → ${STAGE_NAMES[s] || s}`);
         prevStage = s;
 
@@ -959,6 +1105,25 @@
     // milestonesInfo[].scaling, Stage.ts assignMilestoneInformation non-vacuum
     // branch). If a game update changes these, re-verify against the compiled
     // build and re-run the probe.
+    const GAME_VERSION = '0.2.9'; // the game version these tables are verified against
+    let gameVersionWarningShown = false;
+    function checkGameVersion() {
+        if (gameVersionWarningShown) return;
+        const sv = readGameSave();
+        if (!sv) return; // save not loaded yet — try again next tick
+        const saveVer = sv.version; // e.g. "v0.2.9"
+        if (saveVer) {
+            const normalized = String(saveVer).replace(/^v/i, '');
+            if (normalized !== GAME_VERSION) {
+                gameVersionWarningShown = true;
+                const msg = `[Fundamental] WARNING: game save version is ${saveVer}, but milestone tables are calibrated for v${GAME_VERSION}. ` +
+                    `If the game updated its milestone scaling, milestones may be attempted with wrong thresholds. ` +
+                    `Re-verify against the compiled build and update MS_SCALING/MS_TIME_BASE if needed.`;
+                console.warn(msg);
+                pushLog(`⚠️ game v${normalized} — milestone tables may be stale (calibrated for v${GAME_VERSION})`);
+            }
+        }
+    }
     const MS_SCALING = {
         1: [[1e152, 1e158, 1e164, 1e170, 1e178, 1e190], [23800, 24600, 25800, 27000, 28200, 29600]],
         2: [[1e30, 1e32, 1e34, 1e36, 1e38, 1e40, 1e44], [1500, 2300, 3100, 3900, 4700, 5500, 6400]],
@@ -1195,6 +1360,18 @@
         return state;
     };
 
+    // BUG FIX: backup the game save to a secondary localStorage key before
+    // risky operations (stage/end resets). If a reset corrupts state or the
+    // game crashes mid-reset, the player can restore from the backup key.
+    const SAVE_BACKUP_KEY = 'fundamentalSaveBackup';
+    function backupSave() {
+        try {
+            const raw = localStorage.getItem('fundamentalSave');
+            if (raw) localStorage.setItem(SAVE_BACKUP_KEY, raw);
+        } catch (e) {
+            console.warn('[Fundamental] could not backup save', e);
+        }
+    }
     function slowResets() {
         if (CONFIG.doStageReset && resetReady('reset1Button')) {
             if (msCtl.hold) return; // milestone window open (engine logs its own transitions)
@@ -1204,9 +1381,11 @@
                 }
                 return;
             }
+            backupSave(); // protect against reset corruption
             if (clickIf('reset1Button')) { lastStageResetTs = Date.now(); log('stage reset'); }
         }
         if (CONFIG.doEndReset && resetReady('reset2Button')) {
+            backupSave(); // end reset is the riskiest — full vacuum reset
             if (clickIf('reset2Button')) { lastStageResetTs = Date.now(); log('end reset'); }
         }
     }
@@ -1291,33 +1470,43 @@
     }
 
     function tick() {
-        try {
-            tickCount++;
-            if (document.hidden) {
-                updateHud();
-                return;
-            }
-            acceptOfflineDialog();
-            milestoneEngine();   // sets msCtl BEFORE the passes below consume it
-            applySettings();
-            configureNativeAutomation();
-            // Resets BEFORE purchases. Order matters for stage 2: until
-            // researchesExtra[2][0] is owned, pending cloud gain is computed from
-            // CURRENT (spendable) Drops — buying structures spends them — while
-            // the #vaporizationBoostTotal span still shows the value rendered
-            // before this tick's purchases. Buying first therefore made the bot
-            // fire on an inflated stale reading and vaporize for far fewer clouds
-            // than displayed. For every other stage this order is conservative:
-            // their projections (collapse mass/stars, merge boost) only RISE with
-            // purchases, so a pre-buy read can only delay a trigger, never
-            // overshoot it.
-            fastResets();
-            buyEverything();
+        tickCount++;
+        if (document.hidden) { updateHud(); return; }
+
+        // BUG FIX: each phase gets its own try/catch so a failure in one
+        // (e.g. a DOM read throwing) doesn't skip the rest of the tick.
+        // Previously a single try/catch wrapped everything — one error in
+        // fastResets() killed buying, exports, AND the HUD update for that tick.
+
+        const tickPhase = (label, fn) => {
+            try { fn(); }
+            catch (e) { console.error(`[Fundamental] tick phase "${label}" error`, e); }
+        };
+
+        tickPhase('offline-dialog', acceptOfflineDialog);
+        tickPhase('milestone', () => { checkGameVersion(); milestoneEngine(); }); // sets msCtl BEFORE the passes below consume it
+        tickPhase('settings', () => { applySettings(); configureNativeAutomation(); });
+        // Resets BEFORE purchases. Order matters for stage 2: until
+        // researchesExtra[2][0] is owned, pending cloud gain is computed from
+        // CURRENT (spendable) Drops — buying structures spends them — while
+        // the #vaporizationBoostTotal span still shows the value rendered
+        // before this tick's purchases. Buying first therefore made the bot
+        // fire on an inflated stale reading and vaporize for far fewer clouds
+        // than displayed. For every other stage this order is conservative:
+        // their projections (collapse mass/stars, merge boost) only RISE with
+        // purchases, so a pre-buy read can only delay a trigger, never
+        // overshoot it.
+        tickPhase('resets', fastResets);
+        tickPhase('buy', buyEverything);
+        tickPhase('slow-resets', () => {
             const now = Date.now();
             if (now - lastSlow >= CONFIG.slowResetEveryMs) {
                 lastSlow = now;
                 slowResets();
             }
+        });
+        tickPhase('export', () => {
+            const now = Date.now();
             if (CONFIG.autoExport && activeStage() >= 5 && now - lastExport >= CONFIG.exportEveryMs) {
                 lastExport = now;
                 suppressNextDownload = true; // suppress only the auto-export's file download (keep reward)
@@ -1337,10 +1526,8 @@
                     restoreExportDownloadSuppressor();
                 }
             }
-            updateHud();
-        } catch (e) {
-            console.error('[Fundamental] tick error', e);
-        }
+        });
+        tickPhase('hud', updateHud);
     }
 
     let startTs = 0;
@@ -1620,10 +1807,34 @@
             else if (massReady) decisionDetail = `Projected mass reached the ${massTarget.toFixed(2)}\u00d7 ROI target.`;
             else decisionDetail = `Total collapse boost reached ${totalBoost.toFixed(2)}\u00d7.`;
         }
-        const progress = massRatio == null
+        const massProgress = massRatio == null
             ? null
             : Math.max(0, Math.min(1, (massRatio - 1) / (massTarget - 1)));
         const needed = massRatio == null ? null : Math.max(0, massTarget - massRatio);
+        // BUG FIX: add a star batch progress bar. When star remnants are
+        // pending, the star batch (not mass ROI) is the active trigger path,
+        // so show its progress instead — gives the player a visual countdown
+        // to the next star-driven collapse.
+        const starProgress = hasStars && CONFIG.collapseStarBatch > 0
+            ? Math.max(0, Math.min(1, pendingStarSum / CONFIG.collapseStarBatch))
+            : null;
+        const progressObj = starProgress != null
+            ? {
+                label: 'Star batch progress',
+                pct: `${(starProgress * 100).toFixed(1)}%`,
+                width: starProgress * 100,
+                left: '0',
+                current: `${pendingStarSum}`,
+                target: `${CONFIG.collapseStarBatch}`,
+            }
+            : massProgress == null ? null : {
+                label: 'Mass-only ROI progress',
+                pct: `${(massProgress * 100).toFixed(1)}% of ROI`,
+                width: massProgress * 100,
+                left: '1.000×',
+                current: `${massRatio.toFixed(3)}×`,
+                target: `${massTarget.toFixed(2)}×`,
+            };
         const last = [...collapseLog].reverse().find((record) => record.accepted);
         const lastText = last
             ? `#${last.n} \u00b7 ${fmtHudMass(last.bankedMassBefore)} \u2192 ${fmtHudMass(last.bankedMassAfter)} \u00b7 ${last.projectedRatio == null ? 'auto' : `${last.projectedRatio.toFixed(3)}\u00d7`} \u00b7 ${last.reason}`
@@ -1643,14 +1854,7 @@
                 ['Projected mass', fmtHudMass(projectedMass)],
                 ['Mass-only ROI', massRatio == null ? 'Game controlled' : `${massRatio.toFixed(3)}\u00d7 / ${massTarget.toFixed(2)}\u00d7`],
             ],
-            progress: progress == null ? null : {
-                label: 'Mass-only ROI progress',
-                pct: `${(progress * 100).toFixed(1)}% of ROI`,
-                width: progress * 100,
-                left: '1.000\u00d7',
-                current: `${massRatio.toFixed(3)}\u00d7`,
-                target: `${massTarget.toFixed(2)}\u00d7`,
-            },
+            progress: progressObj,
             targetLabel: totalBoost == null ? 'Collapse owner' : starReady ? 'Star batch ready' : 'Next mass-only collapse',
             targetValue: totalBoost == null ? 'Game controlled' : starReady ? `+${starValues.join(' / ')}` : `${massTarget.toFixed(2)}\u00d7 mass gain`,
             targetDetail: totalBoost == null
@@ -1819,6 +2023,25 @@
     // ---- Boot -----------------------------------------------------------------
     function boot() {
         if (!exists('makeAllFooter')) { setTimeout(boot, 500); return; } // wait for game UI
+        // BUG FIX: validate strangenessTargets config at startup. A missing or
+        // non-array value silently disables the saving-window system, leaving
+        // the player wondering why high-value targets aren't being pursued.
+        if (CONFIG.smartStrangeness) {
+            const targets = Array.isArray(CONFIG.strangenessTargets) ? CONFIG.strangenessTargets : null;
+            if (!targets || targets.length === 0) {
+                console.warn('[Fundamental] smartStrangeness is enabled but strangenessTargets is missing, empty, or not an array. ' +
+                    'The saving-window system will be inactive — only current-stage-first buying will run. ' +
+                    'Set CONFIG.strangenessTargets to an array of strangeness element IDs (e.g. ["strange7Stage3"]) to enable targeted saving.');
+                pushLog('⚠️ strangenessTargets not configured — saving windows inactive');
+            } else {
+                // Verify each target ID exists in the DOM (game may have added/renamed)
+                const missing = targets.filter((id) => !$(id));
+                if (missing.length) {
+                    console.warn(`[Fundamental] strangenessTargets IDs not found in DOM: ${missing.join(', ')}. ` +
+                        'These may be stage-gated (appear after a stage unlock) or renamed in a game update.');
+                }
+            }
+        }
         buildHud();
         // expose manual controls for the console
         window.FundamentalBot = {
