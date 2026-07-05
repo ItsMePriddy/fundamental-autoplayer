@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.18.1
+// @version      1.18.2
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -1361,7 +1361,14 @@
         if (s2.length && est > CONFIG.milestoneRampFrac * Math.min(...s2.map((p) => p.limit))) {
             msCtl.suppressVaporize = true;
         }
-        msCtl.hold = est * 1000 < CONFIG.runHoldMaxMs;
+        // Hold the stage reset while ANY live milestone window is still open.
+        // The safety cap (runHoldMaxMs) catches edge cases where window math is
+        // wrong, but the real ceiling is the tightest live window's limit —
+        // MS_TIME_BASE ranges up to 16 h (stage 4), far beyond the 3 h cap.
+        // Using only the cap caused a 1–13 h gap where the hold released while
+        // the window was still open, letting the bot prematurely advance stages.
+        const maxWindow = Math.max(...live.map((p) => p.limit));
+        msCtl.hold = est < Math.max(CONFIG.runHoldMaxMs / 1000, maxWindow);
 
         // HUD line + transition logs for the nearest-deadline live window.
         const next = live.reduce((a, b) => (a.limit < b.limit ? a : b));
