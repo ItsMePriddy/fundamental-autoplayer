@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.18.2
+// @version      1.18.3
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -42,10 +42,11 @@
  *      regains focus, so it never blocks unattended play.
  *   5. Milestone completion engine (non-vacuum): reads the game's own autosave
  *      from localStorage to know each stage milestone's tier, per-tier time
- *      limit, and progress counter, then holds stage resets (and temporarily
- *      suppresses discharge/vaporize, whose resets WIPE those counters) while
- *      a tier is still winnable this run — with per-tier retry backoff once an
- *      attempt fails, so hopeless tiers don't drag the quark loop. See the
+ *      limit, and progress counter, then holds stage resets, disables native
+ *      auto-stage reset, and temporarily suppresses discharge/vaporize (whose
+ *      resets WIPE those counters) while a tier is still winnable this run —
+ *      with per-tier retry backoff once an attempt fails, so hopeless tiers
+ *      don't drag the quark loop. See the
  *      "Milestone completion engine" section for mechanics + sim evidence.
  *
  * Readiness is read from button text because these reset buttons are never marked
@@ -75,7 +76,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.18.1';
+        return '1.18.3';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -252,9 +253,10 @@
                                 // spends the energy the s1 milestone scores until
                                 // strangeness[1][4]>=2), vaporize zeroes the drop total and the
                                 // simultaneous-puddle count. So while a tier's window is open
-                                // the bot holds the stage reset AND, after a ramp phase (below),
-                                // suppresses that stage's small reset — its own clicks plus the
-                                // game's native auto via toggleAuto1/toggleAuto2. Replaces
+                                // the bot holds the stage reset, disables the game's native Stage
+                                // reset auto, and after a ramp phase (below) suppresses that
+                                // stage's small reset — its own clicks plus the game's native
+                                // auto via toggleAuto1/toggleAuto2. Replaces
                                 // v1.16's stage-4/5-only milestoneRunHold: windows subsume it
                                 // (hold exactly while a milestone is still winnable, release the
                                 // moment none is). Sim-validated from a real save over 36 simH
@@ -411,15 +413,18 @@
     // game tick and wipes the milestone counter. So suppression transitions
     // bypass the throttle.
     let lastApplySettings = 0;
+    let prevHoldStageReset = false;
     let prevSuppressDischarge = false;
     let prevSuppressVaporize = false;
     const APPLY_SETTINGS_MS = 2000;
     function applySettings() {
         const now = Date.now();
-        const suppressChanged = (msCtl.suppressDischarge !== prevSuppressDischarge) ||
+        const suppressChanged = (msCtl.holdStageReset !== prevHoldStageReset) ||
+                                (msCtl.suppressDischarge !== prevSuppressDischarge) ||
                                 (msCtl.suppressVaporize !== prevSuppressVaporize);
         if (!suppressChanged && now - lastApplySettings < APPLY_SETTINGS_MS) return;
         lastApplySettings = now;
+        prevHoldStageReset = msCtl.holdStageReset;
         prevSuppressDischarge = msCtl.suppressDischarge;
         prevSuppressVaporize = msCtl.suppressVaporize;
         if (CONFIG.setConfirmNone) {
@@ -429,10 +434,12 @@
             setToggleOn('toggleAll');                 // master building automation
             setToggleOn('toggleVerse0');              // universe automation
             for (let i = 0; i <= 11; i++) {
-                // The milestone engine temporarily owns the discharge (1) and
-                // vaporization (2) autos: their resets wipe the milestone counters,
-                // so while an attempt is suppressing them the game's own auto must
-                // be OFF too, not just this script's clicks.
+                // The milestone engine temporarily owns Stage reset (0),
+                // discharge (1), and vaporization (2). Stage reset ends the
+                // whole timed window; discharge/vaporize wipe stage-specific
+                // counters. When milestone mode is active, the game's own autos
+                // must be OFF too, not just this script's clicks.
+                if (i === 0 && msCtl.holdStageReset) { setToggleOff('toggleAuto0'); continue; }
                 if (i === 1 && msCtl.suppressDischarge) { setToggleOff('toggleAuto1'); continue; }
                 if (i === 2 && msCtl.suppressVaporize) { setToggleOff('toggleAuto2'); continue; }
                 setToggleOn('toggleAuto' + i); // discharge/stage/upgrade autos
@@ -1203,7 +1210,7 @@
     const msSaveBackoff = () => { try { localStorage.setItem(MS_BACKOFF_KEY, JSON.stringify(msBackoff)); } catch (e) { /* quota — retry state is best-effort */ } };
 
     // Engine state. msCtl is read by applySettings/fastResets/slowResets each tick.
-    let msCtl = { hold: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
+    let msCtl = { hold: false, holdStageReset: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
     let msWindows = {};        // key -> { peak, lastImprove, need, lvl, s, i }
     let msRunDead = {};        // tiers given up on for the CURRENT run
     let msPrevEst = Infinity;  // last estimated stage time (new-run detection)
@@ -1238,7 +1245,7 @@
 
     function milestoneEngine() {
         const prev = msCtl;
-        msCtl = { hold: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
+        msCtl = { hold: false, holdStageReset: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
         if (!CONFIG.milestoneAttempts) return;
         const sv = readGameSave();
         // Out of scope: no save yet, vacuum (different milestone system), inside a
@@ -1369,12 +1376,14 @@
         // the window was still open, letting the bot prematurely advance stages.
         const maxWindow = Math.max(...live.map((p) => p.limit));
         msCtl.hold = est < Math.max(CONFIG.runHoldMaxMs / 1000, maxWindow);
+        msCtl.holdStageReset = msCtl.hold;
 
         // HUD line + transition logs for the nearest-deadline live window.
         const next = live.reduce((a, b) => (a.limit < b.limit ? a : b));
         const w = msWindows[next.key];
         msCtl.hudLine = `⛰️ '${MS_NAMES[next.s][next.i]}' ${next.lvl + 1}/${MS_SCALING[next.s][next.i].length}: `
             + `${fmtMsVal(w?.peak)} / ${fmtMsVal(next.need)} · ${fmtDur(Math.max(0, next.limit - est))} left`
+            + (msCtl.holdStageReset ? ' · stage held' : '')
             + (msCtl.suppressDischarge ? ' · discharge held' : '')
             + (msCtl.suppressVaporize ? ' · vaporize held' : '');
         if (msCtl.hold && !prev.hold) {
@@ -1589,11 +1598,12 @@
         running = false;
         if (mainTimer) clearInterval(mainTimer);
         mainTimer = null;
-        // Hand the discharge/vaporize autos back to the game if an attempt was
+        // Hand milestone-owned autos back to the game if an attempt was
         // mid-suppression — a paused script shouldn't leave them disabled.
+        if (msCtl.holdStageReset) setToggleOn('toggleAuto0');
         if (msCtl.suppressDischarge) setToggleOn('toggleAuto1');
         if (msCtl.suppressVaporize) setToggleOn('toggleAuto2');
-        msCtl = { hold: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
+        msCtl = { hold: false, holdStageReset: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
         suppressNextDownload = false;
         if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
         suppressDownloadTimer = null;
