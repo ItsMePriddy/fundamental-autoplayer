@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.18.4
+// @version      1.18.5
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -76,7 +76,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.18.4';
+        return '1.18.5';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -286,6 +286,16 @@
                                 // landed (income too low to grow into them); with it the loop
                                 // recovers between probes and grows through the targets.
         milestoneRetryCapMs: 21600000, // 6 h cap on any single retry cooldown.
+        milestoneQuarkFarm: true, // late Stage 5 galaxy milestones scale hard with unspent
+                                // Strange-quark stageBoost. If End of Greatness is the only
+                                // live target and quarks are below the reserve table below,
+                                // release stage reset to farm quarks first, then resume
+                                // milestone mode once the reserve is met.
+        milestoneGalaxyReserveQuarks: [0, 10000, 10000, 10000, 10000, 10000, 25000, 50000],
+                                // Reserve by current s5[1] tier before attempting the next
+                                // End of Greatness tier. Matched probes from the 2026-07-09
+                                // Intergalactic save: +10k quarks turns 1/8 -> 6/8 in 3h;
+                                // +25k/+50k materially improves the last two near-misses.
         runStallReleaseMs: 720000, // declare an open milestone window dead for THIS run after
                                 // this long without a >2% improvement in its tracked counter
                                 // (12 min) — its retry cooldown starts immediately, and once
@@ -1219,6 +1229,7 @@
     let msPrevTiers = null;    // last seen player.milestones (award detection)
     let msLastTick = 0;        // detects hidden-tab gaps (stall clocks must not run then)
     let lastStageResetTs = 0;  // set when this script fires a stage/end reset
+    let msFarmTarget = null;   // suppress repeated quark-farming transition logs
 
     // Estimated CURRENT stage time: the autosave's counter plus wall time since
     // it was written. If this script reset the stage more recently than the
@@ -1243,6 +1254,13 @@
         msBackoff[key] = { fails, nextTryAt: Date.now() + cool };
         msSaveBackoff();
         pushLog(`⛰️ '${MS_NAMES[w.s][w.i]}' tier ${w.lvl + 1} ${why} at ${(ratio * 100).toFixed(0)}% — retry in ${fmtDur(cool / 1000)}`);
+    }
+
+    function msQuarkReserve(p) {
+        if (!CONFIG.milestoneQuarkFarm) return 0;
+        if (p.s !== 5 || p.i !== 1) return 0;
+        const table = CONFIG.milestoneGalaxyReserveQuarks || [];
+        return table[p.lvl] || 0;
     }
 
     function milestoneEngine() {
@@ -1318,6 +1336,28 @@
                 open.push({ s, i, lvl, key, limit, need: MS_SCALING[s][i][lvl] });
             }
         }
+
+        const quarks = sv.strange?.[0]?.current || 0;
+        const farmed = [];
+        const attemptable = [];
+        for (const p of open) {
+            const reserve = msQuarkReserve(p);
+            if (reserve > 0 && quarks < reserve) farmed.push({ ...p, reserve });
+            else attemptable.push(p);
+        }
+        open.length = 0;
+        open.push(...attemptable);
+        if (farmed.length && !open.length) {
+            const p = farmed.reduce((a, b) => (a.reserve < b.reserve ? a : b));
+            const key = p.key;
+            msCtl.hudLine = `💠 farming quarks for '${MS_NAMES[p.s][p.i]}' ${p.lvl + 1}/${MS_SCALING[p.s][p.i].length}: ${Math.floor(quarks).toLocaleString('en-US')} / ${p.reserve.toLocaleString('en-US')}`;
+            if (msFarmTarget !== key) {
+                pushLog(`💠 farming quarks before '${MS_NAMES[p.s][p.i]}' tier ${p.lvl + 1}: ${Math.floor(quarks).toLocaleString('en-US')} / ${p.reserve.toLocaleString('en-US')}`);
+                msFarmTarget = key;
+            }
+            return;
+        }
+        if (open.length) msFarmTarget = null;
 
         // Track progress + stall inside each open window.
         const openKeys = new Set(open.map((p) => p.key));

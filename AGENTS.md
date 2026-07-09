@@ -13,7 +13,7 @@ globals** — all interaction is via clicking buttons and reading DOM text.
 
 - **Repo:** https://github.com/ItsMePriddy/fundamental-autoplayer
 - **Install URL:** `https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js`
-- **Current version:** v1.18.4 (see `@version` header)
+- **Current version:** v1.18.5 (see `@version` header)
 - **Game source (compiled):** `headless/build/*.js` — the real game TypeScript
   compiled to CommonJS for headless validation
 
