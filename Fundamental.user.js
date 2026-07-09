@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.18.3
+// @version      1.18.4
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -76,7 +76,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.18.3';
+        return '1.18.4';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -1204,7 +1204,9 @@
     }
 
     // Retry backoff, persisted across reloads. Key: s<stage>i<index>t<tier>.
-    const MS_BACKOFF_KEY = 'fbMilestoneBackoff';
+    // Suffix bumps intentionally discard stale failed-window data from older
+    // milestone policies; a bad backoff can hide every live milestone window.
+    const MS_BACKOFF_KEY = 'fbMilestoneBackoff_v2';
     let msBackoff = {};
     try { msBackoff = JSON.parse(localStorage.getItem(MS_BACKOFF_KEY) || '{}') || {}; } catch (e) { msBackoff = {}; }
     const msSaveBackoff = () => { try { localStorage.setItem(MS_BACKOFF_KEY, JSON.stringify(msBackoff)); } catch (e) { /* quota — retry state is best-effort */ } };
