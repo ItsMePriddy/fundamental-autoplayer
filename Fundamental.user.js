@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.18.5
+// @version      1.18.6
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -76,7 +76,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.18.5';
+        return '1.18.6';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -296,6 +296,11 @@
                                 // End of Greatness tier. Matched probes from the 2026-07-09
                                 // Intergalactic save: +10k quarks turns 1/8 -> 6/8 in 3h;
                                 // +25k/+50k materially improves the last two near-misses.
+        milestoneQuarkFarmResetWaitMs: 1200000,
+                                // Farm Stage 4/5 for 20 minutes before taking a Stage-reset
+                                // quark reward. Probe against the 09.07.2026 Interstellar save:
+                                // 50k unspent landed in 2.33h at 20m, while 5m took 4.75h.
+                                // Long loops build galaxies, which multiply the reward.
         runStallReleaseMs: 720000, // declare an open milestone window dead for THIS run after
                                 // this long without a >2% improvement in its tracked counter
                                 // (12 min) — its retry cooldown starts immediately, and once
@@ -424,17 +429,20 @@
     // bypass the throttle.
     let lastApplySettings = 0;
     let prevHoldStageReset = false;
+    let prevFarmStageReset = false;
     let prevSuppressDischarge = false;
     let prevSuppressVaporize = false;
     const APPLY_SETTINGS_MS = 2000;
     function applySettings() {
         const now = Date.now();
         const suppressChanged = (msCtl.holdStageReset !== prevHoldStageReset) ||
+                                (msCtl.farmStageReset !== prevFarmStageReset) ||
                                 (msCtl.suppressDischarge !== prevSuppressDischarge) ||
                                 (msCtl.suppressVaporize !== prevSuppressVaporize);
         if (!suppressChanged && now - lastApplySettings < APPLY_SETTINGS_MS) return;
         lastApplySettings = now;
         prevHoldStageReset = msCtl.holdStageReset;
+        prevFarmStageReset = msCtl.farmStageReset;
         prevSuppressDischarge = msCtl.suppressDischarge;
         prevSuppressVaporize = msCtl.suppressVaporize;
         if (CONFIG.setConfirmNone) {
@@ -449,7 +457,7 @@
                 // whole timed window; discharge/vaporize wipe stage-specific
                 // counters. When milestone mode is active, the game's own autos
                 // must be OFF too, not just this script's clicks.
-                if (i === 0 && msCtl.holdStageReset) { setToggleOff('toggleAuto0'); continue; }
+                if (i === 0 && (msCtl.holdStageReset || msCtl.farmStageReset)) { setToggleOff('toggleAuto0'); continue; }
                 if (i === 1 && msCtl.suppressDischarge) { setToggleOff('toggleAuto1'); continue; }
                 if (i === 2 && msCtl.suppressVaporize) { setToggleOff('toggleAuto2'); continue; }
                 setToggleOn('toggleAuto' + i); // discharge/stage/upgrade autos
@@ -1222,7 +1230,7 @@
     const msSaveBackoff = () => { try { localStorage.setItem(MS_BACKOFF_KEY, JSON.stringify(msBackoff)); } catch (e) { /* quota — retry state is best-effort */ } };
 
     // Engine state. msCtl is read by applySettings/fastResets/slowResets each tick.
-    let msCtl = { hold: false, holdStageReset: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
+    let msCtl = { hold: false, holdStageReset: false, farmStageReset: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
     let msWindows = {};        // key -> { peak, lastImprove, need, lvl, s, i }
     let msRunDead = {};        // tiers given up on for the CURRENT run
     let msPrevEst = Infinity;  // last estimated stage time (new-run detection)
@@ -1265,7 +1273,7 @@
 
     function milestoneEngine() {
         const prev = msCtl;
-        msCtl = { hold: false, holdStageReset: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
+        msCtl = { hold: false, holdStageReset: false, farmStageReset: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
         if (!CONFIG.milestoneAttempts) return;
         const sv = readGameSave();
         // Out of scope: no save yet, vacuum (different milestone system), inside a
@@ -1350,7 +1358,10 @@
         if (farmed.length && !open.length) {
             const p = farmed.reduce((a, b) => (a.reserve < b.reserve ? a : b));
             const key = p.key;
-            msCtl.hudLine = `💠 farming quarks for '${MS_NAMES[p.s][p.i]}' ${p.lvl + 1}/${MS_SCALING[p.s][p.i].length}: ${Math.floor(quarks).toLocaleString('en-US')} / ${p.reserve.toLocaleString('en-US')}`;
+            msCtl.farmStageReset = true;
+            const farmWait = CONFIG.milestoneQuarkFarmResetWaitMs / 1000;
+            const runTime = estStageTime(sv);
+            msCtl.hudLine = `💠 farming quarks for '${MS_NAMES[p.s][p.i]}' ${p.lvl + 1}/${MS_SCALING[p.s][p.i].length}: ${Math.floor(quarks).toLocaleString('en-US')} / ${p.reserve.toLocaleString('en-US')} · reset in ${fmtDur(Math.max(0, farmWait - runTime))}`;
             if (msFarmTarget !== key) {
                 pushLog(`💠 farming quarks before '${MS_NAMES[p.s][p.i]}' tier ${p.lvl + 1}: ${Math.floor(quarks).toLocaleString('en-US')} / ${p.reserve.toLocaleString('en-US')}`);
                 msFarmTarget = key;
@@ -1466,7 +1477,12 @@
     function slowResets() {
         if (CONFIG.doStageReset && resetReady('reset1Button')) {
             if (msCtl.hold) return; // milestone window open (engine logs its own transitions)
-            if (shouldHoldStage5Reset()) {
+            if (msCtl.farmStageReset) {
+                const sv = readGameSave();
+                const runTimeMs = sv ? estStageTime(sv) * 1000 : 0;
+                if (runTimeMs < CONFIG.milestoneQuarkFarmResetWaitMs) return;
+            }
+            if (!msCtl.farmStageReset && shouldHoldStage5Reset()) {
                 if (!eventLog.length || eventLog[eventLog.length - 1].msg !== '⏳ holding Stage 5 reset') {
                     pushLog('⏳ holding Stage 5 reset');
                 }
@@ -1642,10 +1658,10 @@
         mainTimer = null;
         // Hand milestone-owned autos back to the game if an attempt was
         // mid-suppression — a paused script shouldn't leave them disabled.
-        if (msCtl.holdStageReset) setToggleOn('toggleAuto0');
+        if (msCtl.holdStageReset || msCtl.farmStageReset) setToggleOn('toggleAuto0');
         if (msCtl.suppressDischarge) setToggleOn('toggleAuto1');
         if (msCtl.suppressVaporize) setToggleOn('toggleAuto2');
-        msCtl = { hold: false, holdStageReset: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
+        msCtl = { hold: false, holdStageReset: false, farmStageReset: false, suppressDischarge: false, suppressVaporize: false, hudLine: null };
         suppressNextDownload = false;
         if (suppressDownloadTimer) clearTimeout(suppressDownloadTimer);
         suppressDownloadTimer = null;
