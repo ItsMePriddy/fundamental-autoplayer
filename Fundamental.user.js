@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.18.8
+// @version      1.18.9
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -76,7 +76,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.18.8';
+        return '1.18.9';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -449,6 +449,10 @@
             for (let i = 0; i <= 7; i++) setConfirmNone('toggleConfirm' + i);
         }
         if (CONFIG.enableGameAutomation) {
+            // A live false-Vacuum Galaxy run must reach 22 before Galactic
+            // Merger unlocks. Native Stage-reset automation would wipe that
+            // run independently of slowResets(), so suppress it here too.
+            const protectFirstVacuumRun = activeStage() === 5 && !!firstVacuumMergeState();
             setToggleOn('toggleAll');                 // master building automation
             setToggleOn('toggleVerse0');              // universe automation
             for (let i = 0; i <= 11; i++) {
@@ -457,7 +461,7 @@
                 // whole timed window; discharge/vaporize wipe stage-specific
                 // counters. When milestone mode is active, the game's own autos
                 // must be OFF too, not just this script's clicks.
-                if (i === 0 && (msCtl.holdStageReset || msCtl.farmStageReset)) { setToggleOff('toggleAuto0'); continue; }
+                if (i === 0 && (msCtl.holdStageReset || msCtl.farmStageReset || protectFirstVacuumRun)) { setToggleOff('toggleAuto0'); continue; }
                 if (i === 1 && msCtl.suppressDischarge) { setToggleOff('toggleAuto1'); continue; }
                 if (i === 2 && msCtl.suppressVaporize) { setToggleOff('toggleAuto2'); continue; }
                 setToggleOn('toggleAuto' + i); // discharge/stage/upgrade autos
@@ -995,17 +999,25 @@
         // purchase color immediately, so use it as live ownership evidence.
         const mergerImage = $('upgrade4');
         const mergerOwned = sv.upgrades?.[5]?.[3] === 1 || !!mergerImage?.style.backgroundColor;
-        if (!mergerOwned) return null;
         const savedGalaxies = Number(sv.buildings?.[5]?.[3]?.true);
         const liveGalaxies = readNum('#building3True');
         const galaxies = liveGalaxies != null ? liveGalaxies : savedGalaxies;
-        if (!Number.isFinite(galaxies)) return null;
+        // Positive Galaxy progress is enough to protect this run. Requiring
+        // Galactic Merger here was circular: milestone 5[1]'s 22-Galaxy tier
+        // unlocks Galactic Merger in the first place.
+        if (!Number.isFinite(galaxies) || (galaxies <= 0 && !mergerOwned)) return null;
         // First true Vacuum has no Universes, so game requirement is 22. Read
         // displayed requirement when available to stay compatible with changes.
         const buttonText = textOf('reset0Button');
         const displayed = /galax/i.test(buttonText) ? numFromText(buttonText) : null;
         const requirement = displayed != null ? displayed : 22;
-        return { galaxies, requirement, ready: galaxies >= requirement };
+        return {
+            galaxies,
+            requirement,
+            mergerOwned,
+            galaxiesReady: galaxies >= requirement,
+            ready: mergerOwned && galaxies >= requirement,
+        };
     }
 
     function mergeStep() {
@@ -2071,7 +2083,9 @@
                     decision: firstMerge.ready ? 'Collapsing false Vacuum' : 'Building first Vacuum merge',
                     decisionDetail: firstMerge.ready
                         ? 'Galactic Merger and required Galaxies are ready.'
-                        : 'Holding Intergalactic until first Vacuum transition is ready.',
+                        : firstMerge.galaxiesReady
+                            ? 'Galaxy target reached; buying Galactic Merger.'
+                            : 'Holding Intergalactic until first Vacuum transition is ready.',
                     ready: firstMerge.ready,
                     heading: 'Intergalactic',
                     metrics: [
@@ -2082,8 +2096,12 @@
                     progress: { label: 'Galaxies for true Vacuum', pct: `${(progress * 100).toFixed(1)}%`, width: progress * 100, left: '0', current: `${firstMerge.galaxies}`, target: `${firstMerge.requirement}` },
                     targetLabel: 'First merge',
                     targetValue: `${firstMerge.requirement} true Galaxies`,
-                    targetDetail: firstMerge.ready ? 'Requirement met; reset click pending.' : `${firstMerge.requirement - firstMerge.galaxies} Galaxies needed`,
-                    signal: 'Galactic Merger owned · false Vacuum transition',
+                    targetDetail: firstMerge.ready
+                        ? 'Requirement met; reset click pending.'
+                        : firstMerge.galaxiesReady
+                            ? 'Waiting for Galactic Merger purchase.'
+                            : `${firstMerge.requirement - firstMerge.galaxies} Galaxies needed`,
+                    signal: `${firstMerge.mergerOwned ? 'Galactic Merger owned' : 'Galactic Merger not yet owned'} · false Vacuum transition`,
                     lastLabel: 'Last merge',
                     lastValue: latestEventText(/merge|vacuum/i),
                 };
