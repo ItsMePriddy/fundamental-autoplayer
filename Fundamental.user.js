@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.18.6
+// @version      1.18.7
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -76,7 +76,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.18.6';
+        return '1.18.7';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -983,7 +983,36 @@
     // game's own auto-merge, at which point we stop and defer to the game (matching collapse).
     let mergeLastTs = 0;
     let stage5HoldStart = 0;
+
+    // Before true Vacuum, Fundamental never changes reset0Button from
+    // "Requires 22 Galaxies" to a ready label. mergeResetCheck() still accepts
+    // the click once Galactic Merger is owned and the requirement is met, so
+    // button-text readiness cannot be used for this one-time transition.
+    function firstVacuumMergeState() {
+        const sv = readGameSave();
+        if (!sv || sv.inflation?.vacuum || sv.tree?.[0]?.[5] >= 1) return null;
+        if (sv.upgrades?.[5]?.[3] !== 1) return null;
+        const savedGalaxies = Number(sv.buildings?.[5]?.[3]?.true);
+        const liveGalaxies = readNum('#building3True');
+        const galaxies = liveGalaxies != null ? liveGalaxies : savedGalaxies;
+        if (!Number.isFinite(galaxies)) return null;
+        // First true Vacuum has no Universes, so game requirement is 22. Read
+        // displayed requirement when available to stay compatible with changes.
+        const buttonText = textOf('reset0Button');
+        const displayed = /galax/i.test(buttonText) ? numFromText(buttonText) : null;
+        const requirement = displayed != null ? displayed : 22;
+        return { galaxies, requirement, ready: galaxies >= requirement };
+    }
+
     function mergeStep() {
+        const firstMerge = firstVacuumMergeState();
+        if (firstMerge) {
+            if (firstMerge.ready && clickIf('reset0Button')) {
+                mergeLastTs = 0;
+                pushLog('🌌 collapsed false Vacuum with ' + firstMerge.galaxies + ' Galaxies');
+            }
+            return;
+        }
         if (!resetReady('reset0Button') || !/merge/i.test(textOf('reset0Button'))) {
             // BUG FIX: do NOT set mergeLastTs here. Previously this started the
             // anti-hang timer on the very first tick (when merge wasn't even
@@ -1008,6 +1037,7 @@
     }
 
     function stage5HasUnlockedWork() {
+        if (firstVacuumMergeState()) return true;
         const mergeBoost = readNum('#mergeBoostTotal > span');
         // Merge is actionable when ready, or when boost is high enough that
         // waiting for the 2.0× trigger is realistic. At 1.00× (all galaxies
@@ -1035,6 +1065,10 @@
             return false;
         }
         if (!stage5HoldStart) stage5HoldStart = Date.now();
+        // Galactic Merger owned in false Vacuum: keep Stage 5 until 22 Galaxies
+        // are built and the one-time Vacuum-collapse click succeeds. Leaving via
+        // a Stage reset would wipe this run's Stage 5 progress.
+        if (firstVacuumMergeState()) return true;
         const mergeBoost = readNum('#mergeBoostTotal > span');
         // Hold indefinitely if merge is actually ready or approaching
         if (/merge/i.test(textOf('reset0Button')) &&
@@ -2017,6 +2051,30 @@
             };
         }
         if (stage === 5) {
+            const firstMerge = firstVacuumMergeState();
+            if (firstMerge) {
+                const progress = Math.max(0, Math.min(1, firstMerge.galaxies / firstMerge.requirement));
+                return {
+                    decision: firstMerge.ready ? 'Collapsing false Vacuum' : 'Building first Vacuum merge',
+                    decisionDetail: firstMerge.ready
+                        ? 'Galactic Merger and required Galaxies are ready.'
+                        : 'Holding Intergalactic until first Vacuum transition is ready.',
+                    ready: firstMerge.ready,
+                    heading: 'Intergalactic',
+                    metrics: [
+                        [resource.label, resource.value],
+                        ['True Galaxies', `${firstMerge.galaxies} / ${firstMerge.requirement}`],
+                        ['Stage policy', 'Hold'],
+                    ],
+                    progress: { label: 'Galaxies for true Vacuum', pct: `${(progress * 100).toFixed(1)}%`, width: progress * 100, left: '0', current: `${firstMerge.galaxies}`, target: `${firstMerge.requirement}` },
+                    targetLabel: 'First merge',
+                    targetValue: `${firstMerge.requirement} true Galaxies`,
+                    targetDetail: firstMerge.ready ? 'Requirement met; reset click pending.' : `${firstMerge.requirement - firstMerge.galaxies} Galaxies needed`,
+                    signal: 'Galactic Merger owned · false Vacuum transition',
+                    lastLabel: 'Last merge',
+                    lastValue: latestEventText(/merge|vacuum/i),
+                };
+            }
             const boost = readNum('#mergeBoostTotal > span');
             const target = CONFIG.mergeBoost;
             const progress = boost == null ? null : Math.max(0, Math.min(1, boost / target));
