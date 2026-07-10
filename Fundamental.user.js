@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.18.7
+// @version      1.18.8
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -76,7 +76,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.18.7';
+        return '1.18.8';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -991,7 +991,11 @@
     function firstVacuumMergeState() {
         const sv = readGameSave();
         if (!sv || sv.inflation?.vacuum || sv.tree?.[0]?.[5] >= 1) return null;
-        if (sv.upgrades?.[5]?.[3] !== 1) return null;
+        // Save refreshes only every ~20s. Upgrade image gets an inline Stage-5
+        // purchase color immediately, so use it as live ownership evidence.
+        const mergerImage = $('upgrade4');
+        const mergerOwned = sv.upgrades?.[5]?.[3] === 1 || !!mergerImage?.style.backgroundColor;
+        if (!mergerOwned) return null;
         const savedGalaxies = Number(sv.buildings?.[5]?.[3]?.true);
         const liveGalaxies = readNum('#building3True');
         const galaxies = liveGalaxies != null ? liveGalaxies : savedGalaxies;
@@ -1511,6 +1515,15 @@
     function slowResets() {
         if (CONFIG.doStageReset && resetReady('reset1Button')) {
             if (msCtl.hold) return; // milestone window open (engine logs its own transitions)
+            // First Vacuum merge outranks quark-farm stage-reset policy. The
+            // farm flag previously bypassed shouldHoldStage5Reset() entirely,
+            // allowing Stage 5 to reset even after Galactic Merger was owned.
+            if (activeStage() === 5 && firstVacuumMergeState()) {
+                if (!eventLog.length || eventLog[eventLog.length - 1].msg !== '⏳ holding Stage 5 for true Vacuum') {
+                    pushLog('⏳ holding Stage 5 for true Vacuum');
+                }
+                return;
+            }
             if (msCtl.farmStageReset) {
                 const sv = readGameSave();
                 const runTimeMs = sv ? estStageTime(sv) * 1000 : 0;
