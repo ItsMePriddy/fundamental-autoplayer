@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.18.9
+// @version      1.19.0
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -76,13 +76,14 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.18.9';
+        return '1.19.0';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
     // ---- Config ---------------------------------------------------------------
     const CONFIG = {
         tickMs: 250,            // main loop interval
+        multiStageBuyEveryMs: 1000, // in Vacuum, buy each concurrently active Stage once per second
         slowResetEveryMs: 8000, // how often to attempt stage/end resets
         autoStart: true,        // start playing on load
         enableGameAutomation: true, // flip the game's own auto toggles ON
@@ -344,13 +345,28 @@
         return el ? numFromText(el.textContent) : null;
     };
 
-    // Active stage, read from the on-screen stage name (no globals are exposed).
-    // Index matches the game's word list in Player.ts.
+    // Active (selected) Stage. In Vacuum, #stageWord is the highest/current
+    // progression Stage, NOT the Stage whose structures are on screen. The game
+    // marks the selected #stageSwitchN button with an inline underline, so prefer
+    // that signal and retain #stageWord only as a pre-selector fallback.
     const STAGE_WORDS = ['', 'microworld', 'submerged', 'accretion', 'interstellar', 'intergalactic', 'abyss'];
     const activeStage = () => {
+        for (let i = 1; i < STAGE_WORDS.length; i++) {
+            const button = $('stageSwitch' + i);
+            if (button && /underline/i.test(button.style.textDecoration || '')) return i;
+        }
         const w = textOf('stageWord').toLowerCase();
         const i = STAGE_WORDS.findIndex((s) => s && w.startsWith(s));
         return i > 0 ? i : 0;
+    };
+
+    const availableStages = () => {
+        const stages = [];
+        for (let i = 1; i < STAGE_WORDS.length; i++) {
+            const button = $('stageSwitch' + i);
+            if (button && getComputedStyle(button).display !== 'none') stages.push(i);
+        }
+        return stages;
     };
 
     // A reset/action button is "ready" if it exists, isn't disabled, and its label
@@ -528,9 +544,35 @@
     }
 
     // ---- Buying pass ----------------------------------------------------------
-    function buyEverything() {
+    let lastMultiStageBuy = 0;
+    function buyCurrentStage() {
         clickIf('makeAllFooter');       // all structures (active stage)
         clickIf('createAllFooter');     // all upgrades + researches
+    }
+
+    function buyEverything() {
+        buyCurrentStage();
+
+        // Vacuum runs several Stages concurrently, but the game's footer buttons
+        // only buy for the selected Stage. Before Auto Structures research exists
+        // (ASR is commonly 0 on the first Vacuum), inactive Stages otherwise never
+        // build. Briefly visit every available Stage, buy, then restore the user's
+        // selected Stage synchronously so intermediate views are not painted.
+        const now = Date.now();
+        const sv = readGameSave();
+        if (sv?.inflation?.vacuum && now - lastMultiStageBuy >= CONFIG.multiStageBuyEveryMs) {
+            lastMultiStageBuy = now;
+            const original = activeStage();
+            try {
+                for (const stage of availableStages()) {
+                    if (stage === original) continue;
+                    if (clickIf('stageSwitch' + stage)) buyCurrentStage();
+                }
+            } finally {
+                if (original > 0 && activeStage() !== original) clickIf('stageSwitch' + original);
+            }
+        }
+
         if (CONFIG.smartStrangeness) buyStrangenessSmart();
         else clickIf('createAllStrangeness');
     }
