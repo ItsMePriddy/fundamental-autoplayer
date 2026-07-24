@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Fundamental Autoplayer
 // @namespace    https://github.com/ItsMePriddy/fundamental-autoplayer
-// @version      1.19.0
+// @version      1.19.1
 // @description  Automatically plays awWhy's "Fundamental" idle game by driving its DOM controls: buys all structures/upgrades/strangeness, performs resets when ready, enables the game's own automation + auto-stage switching, and pushes every stage's milestones toward their final unlocks when feasible.
 // @author       ItsMePriddy
 // @match        https://awwhy.github.io/Fundamental/*
@@ -76,7 +76,7 @@
             }
         } catch (e) { /* fall through to hardcoded fallback */ }
         // Fallback — keep in sync with @version; used only when extraction fails.
-        return '1.19.0';
+        return '1.19.1';
     })();
     const UPDATE_URL = 'https://raw.githubusercontent.com/ItsMePriddy/fundamental-autoplayer/main/Fundamental.user.js';
 
@@ -84,6 +84,9 @@
     const CONFIG = {
         tickMs: 250,            // main loop interval
         multiStageBuyEveryMs: 1000, // in Vacuum, buy each concurrently active Stage once per second
+        vacuumUpgradeFirst: true, // Vacuum Stages feed one another. Buy upgrades/researches before
+                                  // structures so "buy all structures" cannot drain each Stage's
+                                  // currency every pass and permanently starve multiplicative unlocks.
         slowResetEveryMs: 8000, // how often to attempt stage/end resets
         autoStart: true,        // start playing on load
         enableGameAutomation: true, // flip the game's own auto toggles ON
@@ -545,28 +548,37 @@
 
     // ---- Buying pass ----------------------------------------------------------
     let lastMultiStageBuy = 0;
-    function buyCurrentStage() {
+    function buyCurrentStage(upgradeFirst = false) {
+        if (upgradeFirst) {
+            clickIf('createAllFooter'); // reserve current currency for high-ROI upgrades/researches
+            clickIf('makeAllFooter');   // spend remainder on structures
+            return;
+        }
         clickIf('makeAllFooter');       // all structures (active stage)
         clickIf('createAllFooter');     // all upgrades + researches
     }
 
     function buyEverything() {
-        buyCurrentStage();
+        const now = Date.now();
+        const sv = readGameSave();
+        const vacuumUpgradeFirst = !!sv?.inflation?.vacuum && CONFIG.vacuumUpgradeFirst;
+        buyCurrentStage(vacuumUpgradeFirst);
 
         // Vacuum runs several Stages concurrently, but the game's footer buttons
         // only buy for the selected Stage. Before Auto Structures research exists
         // (ASR is commonly 0 on the first Vacuum), inactive Stages otherwise never
-        // build. Briefly visit every available Stage, buy, then restore the user's
-        // selected Stage synchronously so intermediate views are not painted.
-        const now = Date.now();
-        const sv = readGameSave();
+        // build. Briefly visit every available Stage and buy upgrades first: these
+        // Stages form one production chain, while their currencies are separate, so
+        // starving a lower Stage's research can hard-cap every later Stage.
+        // Restore the user's selected Stage synchronously so intermediate views are
+        // not painted.
         if (sv?.inflation?.vacuum && now - lastMultiStageBuy >= CONFIG.multiStageBuyEveryMs) {
             lastMultiStageBuy = now;
             const original = activeStage();
             try {
                 for (const stage of availableStages()) {
                     if (stage === original) continue;
-                    if (clickIf('stageSwitch' + stage)) buyCurrentStage();
+                    if (clickIf('stageSwitch' + stage)) buyCurrentStage(vacuumUpgradeFirst);
                 }
             } finally {
                 if (original > 0 && activeStage() !== original) clickIf('stageSwitch' + original);
